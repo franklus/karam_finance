@@ -1,0 +1,190 @@
+{
+  "actions": [],
+  "allow_rename": 1,
+  "creation": "2026-03-16 00:00:00.000000",
+  "doctype": "DocType",
+  "engine": "InnoDB",
+  "field_order": [
+    "settings_section",
+    "col_merge_prevention",
+    "merge_prevention_help",
+    "prevent_gl_merge",
+    "col_rebuild_subset",
+    "subset_help",
+    "rebuild_company",
+    "rebuild_whole_history",
+    "rebuild_from_posting_date",
+    "rebuild_to_posting_date",
+    "col_rebuild_actions",
+    "rebuild_help",
+    "preview_historical_rebuild",
+    "run_historical_rebuild",
+    "audit_section",
+    "last_preview_run",
+    "last_preview_user",
+    "column_break_audit",
+    "last_migration_run",
+    "last_migration_status",
+    "column_break_audit2",
+    "last_migration_user"
+  ],
+  "fields": [
+    {
+      "fieldname": "settings_section",
+      "fieldtype": "Section Break"
+    },
+    {
+      "fieldname": "col_merge_prevention",
+      "fieldtype": "Column Break",
+      "label": "GL Merge Prevention"
+    },
+    {
+      "fieldname": "merge_prevention_help",
+      "fieldtype": "HTML",
+      "options": "<div class=\"alert alert-info\" style=\"margin-top: 0.5rem\">\n<p>When <b>Prevent GL Entry Merging</b> is enabled:</p>\n<ul>\n<li>Each Journal Entry Account row populates <code>reference_detail_no</code> before submit, giving it a unique merge key.</li>\n<li>GL Entries created from Journal Entries will carry the <code>letter</code> value from the corresponding JE Account row.</li>\n<li>Updates to letters on submitted Journal Entries are synced back to their GL Entries.</li>\n</ul>\n<p>When disabled, these hooks are bypassed and ERPNext\u2019s default GL merge behaviour applies.</p>\n</div>"
+    },
+    {
+      "default": "0",
+      "description": "When enabled, each JE Account row produces a separate GL Entry, preserving per-row letter distinctions.",
+      "fieldname": "prevent_gl_merge",
+      "fieldtype": "Check",
+      "label": "Prevent GL Entry Merging"
+    },
+    {
+      "fieldname": "col_rebuild_subset",
+      "fieldtype": "Column Break",
+      "label": "Historical Rebuild Scope"
+    },
+    {
+      "fieldname": "subset_help",
+      "fieldtype": "HTML",
+      "options": "<div class=\"alert alert-info\" style=\"margin-top: 0.5rem\">\n<p>Select a <b>company</b> and either choose a <b>posting date range</b> or enable <b>Use Entire History</b>.</p>\n<ul>\n<li><b>Eligible</b> vouchers still have merged GL rows and can be rebuilt safely.</li>\n<li><b>Blocked</b> vouchers need manual attention first, such as reopening the fiscal period or enabling Journal Entry reposting.</li>\n<li><b>Already Correct</b> vouchers do not need any rebuild.</li>\n</ul>\n<p>The preview does not modify data.</p>\n</div>"
+    },
+    {
+      "fieldname": "rebuild_company",
+      "fieldtype": "Link",
+      "label": "Company",
+      "options": "Company"
+    },
+    {
+      "default": "0",
+      "description": "When enabled, preview and rebuild consider all submitted Journal Entries for the selected company.",
+      "fieldname": "rebuild_whole_history",
+      "fieldtype": "Check",
+      "label": "Use Entire History"
+    },
+    {
+      "fieldname": "rebuild_from_posting_date",
+      "fieldtype": "Date",
+      "label": "From Posting Date"
+    },
+    {
+      "fieldname": "rebuild_to_posting_date",
+      "fieldtype": "Date",
+      "label": "To Posting Date"
+    },
+    {
+      "fieldname": "col_rebuild_actions",
+      "fieldtype": "Column Break",
+      "label": "Historical Rebuild Actions"
+    },
+    {
+      "fieldname": "rebuild_help",
+      "fieldtype": "HTML",
+      "options": "<div class=\"alert alert-warning\" style=\"margin-top: 0.5rem\">\n<p><b>Historical rebuild uses ERPNext\u2019s repost flow.</b></p>\n<ol>\n<li>Preview the selected subset first.</li>\n<li>Run the rebuild only for eligible vouchers in that subset.</li>\n<li>Blocked vouchers are skipped and reported.</li>\n<li>The retired split-based migration is not used.</li>\n</ol>\n<p>Run small date ranges first and verify results before widening the subset.</p>\n</div>"
+    },
+    {
+      "fieldname": "preview_historical_rebuild",
+      "fieldtype": "Button",
+      "label": "Preview Historical Rebuild"
+    },
+    {
+      "fieldname": "run_historical_rebuild",
+      "fieldtype": "Button",
+      "label": "Run Historical Rebuild"
+    },
+    {
+      "fieldname": "audit_section",
+      "fieldtype": "Section Break",
+      "label": "Historical Rebuild Audit"
+    },
+    {
+      "fieldname": "last_preview_run",
+      "fieldtype": "Datetime",
+      "label": "Last Preview",
+      "read_only": 1,
+      "no_copy": 1
+    },
+    {
+      "fieldname": "last_preview_user",
+      "fieldtype": "Link",
+      "label": "Last Preview By",
+      "options": "User",
+      "read_only": 1,
+      "no_copy": 1
+    },
+    {
+      "fieldname": "column_break_audit",
+      "fieldtype": "Column Break"
+    },
+    {
+      "fieldname": "last_migration_run",
+      "fieldtype": "Datetime",
+      "label": "Last Rebuild",
+      "read_only": 1,
+      "no_copy": 1
+    },
+    {
+      "fieldname": "last_migration_status",
+      "fieldtype": "Data",
+      "label": "Last Rebuild Status",
+      "read_only": 1,
+      "no_copy": 1
+    },
+    {
+      "fieldname": "column_break_audit2",
+      "fieldtype": "Column Break"
+    },
+    {
+      "fieldname": "last_migration_user",
+      "fieldtype": "Link",
+      "label": "Last Rebuild By",
+      "options": "User",
+      "read_only": 1,
+      "no_copy": 1
+    }
+  ],
+  "index_web_pages_for_search": 0,
+  "issingle": 1,
+  "links": [],
+  "modified": "2026-03-19 00:00:00.000000",
+  "modified_by": "Administrator",
+  "module": "Letter Reconciliation",
+  "name": "Letter Reconciliation Settings",
+  "owner": "Administrator",
+  "permissions": [
+    {
+      "create": 1,
+      "delete": 1,
+      "email": 1,
+      "print": 1,
+      "read": 1,
+      "role": "System Manager",
+      "share": 1,
+      "write": 1
+    },
+    {
+      "create": 1,
+      "delete": 1,
+      "email": 1,
+      "print": 1,
+      "read": 1,
+      "role": "Accounts Manager",
+      "share": 1,
+      "write": 1
+    }
+  ],
+  "sort_field": "modified",
+  "sort_order": "DESC",
+  "states": []
+}

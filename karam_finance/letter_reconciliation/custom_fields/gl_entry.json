@@ -1,0 +1,12 @@
+{
+  "GL Entry": [
+    {
+      "label": "Letter",
+      "fieldname": "letter",
+      "insert_after": "is_advance",
+      "fieldtype": "Data",
+      "allow_on_submit": 1,
+      "read_only": 1
+    }
+  ]
+}

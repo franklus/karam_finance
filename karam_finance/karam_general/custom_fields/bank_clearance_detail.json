@@ -1,0 +1,33 @@
+{
+  "Bank Clearance Detail": [
+    {
+      "fieldname": "party_type",
+      "fieldtype": "Link",
+      "options": "DocType",
+      "label": "Party Type",
+      "insert_after": "against_account",
+      "read_only": 1,
+      "in_list_view": 1,
+      "columns": 1
+    },
+    {
+      "fieldname": "party",
+      "fieldtype": "Dynamic Link",
+      "options": "party_type",
+      "label": "Party",
+      "insert_after": "party_type",
+      "read_only": 1,
+      "in_list_view": 1,
+      "columns": 1
+    },
+    {
+      "fieldname": "party_name",
+      "fieldtype": "Data",
+      "label": "Party Name",
+      "insert_after": "party",
+      "read_only": 1,
+      "in_list_view": 1,
+      "columns": 2
+    }
+  ]
+}

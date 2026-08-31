@@ -1,0 +1,12 @@
+{
+  "Account": [
+    {
+      "label": "Enable Lettering",
+      "fieldname": "enable_lettering",
+      "insert_after": "disabled",
+      "fieldtype": "Check",
+      "description": "Enables Account for use in Letter Reconciliation",
+      "no_copy": 1
+    }
+  ]
+}

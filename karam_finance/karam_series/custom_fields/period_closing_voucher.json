@@ -1,0 +1,35 @@
+{
+  "Period Closing Voucher": [
+    {
+      "fieldname": "karam_series_sb",
+      "fieldtype": "Section Break",
+      "label": "Karam Series and Translation"
+    },
+    {
+      "fieldname": "karam_series",
+      "fieldtype": "Link",
+      "insert_after": "karam_series_sb",
+      "label": "Karam Series",
+      "options": "Karam Series"
+    },
+    {
+      "fieldname": "karam_series_cb",
+      "fieldtype": "Column Break",
+      "insert_after": "karam_series"
+    },
+    {
+      "fieldname": "translation",
+      "fieldtype": "Data",
+      "fetch_from": "karam_series.translation",
+      "insert_after": "karam_series_cb",
+      "label": "Series Translation",
+      "read_only": 1
+    },
+    {
+      "fieldname": "karam_series_sb2",
+      "fieldtype": "Section Break",
+      "label": "Karam Posting Date",
+      "insert_after": "translation"
+    }
+  ]
+}

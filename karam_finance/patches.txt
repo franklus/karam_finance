@@ -4,3 +4,7 @@
 
 [post_model_sync]
 # Patches added in this section will be executed after doctypes are migrated
+# Currency column widening is handled by after_doctype_update hook in hooks.py
+# (ensure_currency_columns_capacity) which runs on every migrate for Frappe Cloud compatibility
+karam_finance.patches.backfill_gl_letter_from_je_account
+karam_finance.patches.delete_stale_general_ledger_reporting_currency_report

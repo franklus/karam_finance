@@ -1,0 +1,189 @@
+{
+  "karam_finance/karam_general/report/asset_depreciation_ledger_summary/asset_depreciation_ledger_summary.js": {
+    "no-undef": {
+      "count": 1
+    }
+  },
+  "karam_finance/karam_general/report/bank_reconciliation_statement_(karam)/bank_reconciliation_statement_(karam).js": {
+    "no-param-reassign": {
+      "count": 2
+    },
+    "no-undef": {
+      "count": 1
+    }
+  },
+  "karam_finance/karam_general/report/general_ledger_(karam)/general_ledger_(karam).js": {
+    "complexity": {
+      "count": 1
+    },
+    "curly": {
+      "count": 11
+    },
+    "max-lines-per-function": {
+      "count": 1
+    },
+    "no-undef": {
+      "count": 1
+    }
+  },
+  "karam_finance/karam_general/report/profit_and_loss_statement_by_cost_center/profit_and_loss_statement_by_cost_center.js": {
+    "curly": {
+      "count": 7
+    },
+    "no-param-reassign": {
+      "count": 1
+    },
+    "no-undef": {
+      "count": 1
+    },
+    "sonarjs/no-nested-conditional": {
+      "count": 1
+    }
+  },
+  "karam_finance/karam_general/report/trial_balance_(karam)/trial_balance_(karam).js": {
+    "curly": {
+      "count": 1
+    },
+    "no-undef": {
+      "count": 1
+    }
+  },
+  "karam_finance/karam_general/report/trial_balance_for_party_(karam)/trial_balance_for_party_(karam).js": {
+    "no-undef": {
+      "count": 1
+    }
+  },
+  "karam_finance/letter_reconciliation/doctype/letter_reconciliation/letter_reconciliation.js": {
+    "curly": {
+      "count": 5
+    },
+    "max-lines": {
+      "count": 1
+    }
+  },
+  "karam_finance/letter_reconciliation/doctype/letter_reconciliation_settings/letter_reconciliation_settings.js": {
+    "complexity": {
+      "count": 2
+    },
+    "curly": {
+      "count": 3
+    }
+  },
+  "karam_finance/public/js/karam_general/item_price_on_rate_mismatch.js": {
+    "array-callback-return": {
+      "count": 2
+    },
+    "curly": {
+      "count": 7
+    }
+  },
+  "karam_finance/public/js/karam_general/item_price_on_rate_mismatch_prompt.js": {
+    "complexity": {
+      "count": 1
+    },
+    "consistent-return": {
+      "count": 1
+    },
+    "curly": {
+      "count": 4
+    },
+    "sonarjs/no-nested-conditional": {
+      "count": 3
+    }
+  },
+  "karam_finance/public/js/karam_general/item_price_on_rate_mismatch_state.js": {
+    "array-callback-return": {
+      "count": 1
+    },
+    "curly": {
+      "count": 10
+    },
+    "sonarjs/no-nested-assignment": {
+      "count": 1
+    }
+  },
+  "karam_finance/public/js/karam_series/karam_series_filter.js": {
+    "curly": {
+      "count": 1
+    }
+  },
+  "karam_finance/public/js/report_utils/currency_formatter.bundle.js": {
+    "curly": {
+      "count": 7
+    },
+    "max-lines-per-function": {
+      "count": 1
+    }
+  },
+  "karam_finance/public/js/report_utils/general_ledger_ux.js": {
+    "curly": {
+      "count": 8
+    }
+  },
+  "karam_finance/public/js/report_utils/report_table_ux.js": {
+    "complexity": {
+      "count": 1
+    },
+    "curly": {
+      "count": 4
+    }
+  },
+  "karam_finance/public/js/reporting_currency/reporting_currency_gle_list.js": {
+    "consistent-return": {
+      "count": 1
+    }
+  },
+  "karam_finance/reporting_currency/doctype/reporting_currency_settings/reporting_currency_settings.js": {
+    "complexity": {
+      "count": 1
+    },
+    "max-lines-per-function": {
+      "count": 2
+    },
+    "prefer-const": {
+      "count": 1
+    }
+  },
+  "karam_finance/reporting_currency/report/general_ledger_(reporting)/general_ledger_(reporting).js": {
+    "curly": {
+      "count": 2
+    },
+    "no-undef": {
+      "count": 1
+    }
+  },
+  "karam_finance/reporting_currency/report/trial_balance_for_party_(reporting)/trial_balance_for_party_(reporting).js": {
+    "no-undef": {
+      "count": 1
+    }
+  },
+  "karam_finance/reporting_currency/report/trial_balance_reporting/trial_balance_reporting.js": {
+    "no-undef": {
+      "count": 1
+    }
+  },
+  "tests/js/item_price_on_rate_mismatch.behaviour.support.cjs": {
+    "array-callback-return": {
+      "count": 3
+    },
+    "curly": {
+      "count": 4
+    },
+    "sonarjs/no-nested-assignment": {
+      "count": 2
+    }
+  },
+  "tests/js/item_price_on_rate_mismatch.behaviour.test.js": {
+    "array-callback-return": {
+      "count": 1
+    },
+    "prefer-promise-reject-errors": {
+      "count": 3
+    }
+  },
+  "tests/js/test_report_table_ux.js": {
+    "sonarjs/single-character-alternation": {
+      "count": 1
+    }
+  }
+}

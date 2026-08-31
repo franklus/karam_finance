@@ -1,258 +1,118 @@
+"""Frappe hooks for Karam Finance."""
+
+from karam_finance.karam_series.constants.constants import (
+    KARAM_DOCTYPES as _KARAM_DOCTYPES,
+)
+
+type DocEventValue = str | list[str]
+type DocEvent = dict[str, DocEventValue]
+
 app_name = "karam_finance"
 app_title = "Karam Finance"
 app_publisher = "Noospheric"
 app_description = "Karam-specific finance, reconciliation, reporting, numbering, and operational controls for ERPNext."
 app_email = "repast_pesos42@icloud.com"
 app_license = "mit"
+app_include_js = [
+    "currency_formatter.bundle.js",
+    "/assets/karam_finance/js/report_utils/report_table_ux.js",
+    "/assets/karam_finance/js/karam_general/item_price_on_rate_mismatch_state.js",
+    "/assets/karam_finance/js/karam_general/item_price_on_rate_mismatch_prompt.js",
+    "/assets/karam_finance/js/karam_general/item_price_on_rate_mismatch.js",
+]
 
-# Apps
-# ------------------
+# DocType class overrides
+override_doctype_class = {
+    "Bank Clearance": "karam_finance.overrides.bank_clearance.KaramBankClearance",
+}
 
-# required_apps = []
-
-# Each item in the list will be shown as an app in the apps page
-# add_to_apps_screen = [
-# 	{
-# 		"name": "karam_finance",
-# 		"logo": "/assets/karam_finance/logo.png",
-# 		"title": "Karam Finance",
-# 		"route": "/karam_finance",
-# 		"has_permission": "karam_finance.api.permission.has_app_permission"
-# 	}
-# ]
-
-# Includes in <head>
-# ------------------
-
-# include js, css files in header of desk.html
-# app_include_css = "/assets/karam_finance/css/karam_finance.css"
-# app_include_js = "/assets/karam_finance/js/karam_finance.js"
-
-# include js, css files in header of web template
-# web_include_css = "/assets/karam_finance/css/karam_finance.css"
-# web_include_js = "/assets/karam_finance/js/karam_finance.js"
-
-# include custom scss in every website theme (without file extension ".scss")
-# website_theme_scss = "karam_finance/public/scss/website"
-
-# include js, css files in header of web form
-# webform_include_js = {"doctype": "public/js/doctype.js"}
-# webform_include_css = {"doctype": "public/css/doctype.css"}
-
-# include js in page
-# page_js = {"page" : "public/js/file.js"}
-
-# include js in doctype views
-# doctype_js = {"doctype" : "public/js/doctype.js"}
-# doctype_list_js = {"doctype" : "public/js/doctype_list.js"}
-# doctype_tree_js = {"doctype" : "public/js/doctype_tree.js"}
-# doctype_calendar_js = {"doctype" : "public/js/doctype_calendar.js"}
-
-# Svg Icons
-# ------------------
-# include app icons in desk
-# app_include_icons = "karam_finance/public/icons.svg"
-
-# Home Pages
-# ----------
-
-# application home page (will override Website Settings)
-# home_page = "login"
-
-# website user home page (by Role)
-# role_home_page = {
-# 	"Role": "home_page"
-# }
-
-# Generators
-# ----------
-
-# automatically create page for each record of this doctype
-# website_generators = ["Web Page"]
-
-# automatically load and sync documents of this doctype from downstream apps
-# importable_doctypes = [doctype_1]
-
-# Jinja
-# ----------
-
-# add methods and filters to jinja environment
-# jinja = {
-# 	"methods": "karam_finance.utils.jinja_methods",
-# 	"filters": "karam_finance.utils.jinja_filters"
-# }
+# DocType JS includes (generated from curated list)
+doctype_js = dict.fromkeys(
+    _KARAM_DOCTYPES, "public/js/karam_series/karam_series_filter.js"
+)
+doctype_js["Bank Clearance"] = "public/js/overrides/bank_clearance.js"
+doctype_js["Stock Settings"] = (
+    "public/js/karam_general/stock_settings_item_price_mismatch.js"
+)
+doctype_list_js = {
+    "Reporting Currency GLE": (
+        "public/js/reporting_currency/reporting_currency_gle_list.js"
+    ),
+    "Repost Item Valuation": "public/js/overrides/repost_item_valuation_list.js",
+}
 
 # Installation
-# ------------
+after_install = "karam_finance.migrate.after_install"
 
-# before_install = "karam_finance.install.before_install"
-# after_install = "karam_finance.install.after_install"
+# Migrate hooks
+# Widen columns BEFORE schema sync to prevent truncation errors on existing data
+before_migrate = "karam_finance.common.db_schema.ensure_currency_columns_capacity"
+after_migrate = "karam_finance.migrate.after_migrate"
 
-# Uninstallation
-# ------------
-
-# before_uninstall = "karam_finance.uninstall.before_uninstall"
-# after_uninstall = "karam_finance.uninstall.after_uninstall"
-
-# Integration Setup
-# ------------------
-# To set up dependencies/integrations with other apps
-# Name of the app being installed is passed as an argument
-
-# before_app_install = "karam_finance.utils.before_app_install"
-# after_app_install = "karam_finance.utils.after_app_install"
-
-# Integration Cleanup
-# -------------------
-# To clean up dependencies/integrations with other apps
-# Name of the app being uninstalled is passed as an argument
-
-# before_app_uninstall = "karam_finance.utils.before_app_uninstall"
-# after_app_uninstall = "karam_finance.utils.after_app_uninstall"
-
-# Build
-# ------------------
-# To hook into the build process
-
-# after_build = "karam_finance.build.after_build"
-
-# Desk Notifications
-# ------------------
-# See frappe.core.notifications.get_notification_config
-
-# notification_config = "karam_finance.notifications.get_notification_config"
-
-# Permissions
-# -----------
-# Permissions evaluated in scripted ways
-
-# permission_query_conditions = {
-# 	"Event": "frappe.desk.doctype.event.event.get_permission_query_conditions",
-# }
-#
-# has_permission = {
-# 	"Event": "frappe.desk.doctype.event.event.has_permission",
-# }
+# Ensure currency columns remain widened whenever DocTypes are updated
+after_doctype_update = [
+    "karam_finance.common.db_schema.ensure_currency_columns_capacity"
+]
 
 # Document Events
-# ---------------
-# Hook on document methods and events
+doc_events: dict[str, DocEvent] = {}
 
-# doc_events = {
-# 	"*": {
-# 		"on_update": "method",
-# 		"on_cancel": "method",
-# 		"on_trash": "method"
-# 	}
-# }
+doc_events.setdefault("Stock Settings", {}).update(
+    {
+        "validate": (
+            "karam_finance.karam_general.utils.item_price_on_rate_mismatch.sync_stock_settings_rate_mismatch_rows"
+        )
+    }
+)
 
-# Scheduled Tasks
-# ---------------
+_karam_series_doctypes = list(_KARAM_DOCTYPES)
 
-# scheduler_events = {
-# 	"all": [
-# 		"karam_finance.tasks.all"
-# 	],
-# 	"daily": [
-# 		"karam_finance.tasks.daily"
-# 	],
-# 	"hourly": [
-# 		"karam_finance.tasks.hourly"
-# 	],
-# 	"weekly": [
-# 		"karam_finance.tasks.weekly"
-# 	],
-# 	"monthly": [
-# 		"karam_finance.tasks.monthly"
-# 	],
-# }
+for _dt in _karam_series_doctypes:
+    doc_events[_dt] = {
+        "before_save": [
+            "karam_finance.karam_general.utils.date_fields.populate_karam_date_fields",
+            "karam_finance.karam_series.utils.hooks.populate_karam_series_fields",
+        ],
+        "before_insert": [
+            "karam_finance.karam_general.utils.date_fields.populate_karam_date_fields",
+            "karam_finance.karam_series.utils.hooks.populate_karam_series_fields",
+        ],
+        "validate": [
+            "karam_finance.karam_series.utils.hooks.validate_karam_series_applicability",
+        ],
+    }
 
-# Testing
-# -------
+# Letter Reconciliation doc events
+doc_events.setdefault("GL Entry", {}).update(
+    {
+        "before_insert": (
+            "karam_finance.letter_reconciliation.utils.doc_events.gl_entry_before_insert"
+        ),
+        # Update RC GLE records when GL Entries are renamed by ERPNext's scheduled job
+        "after_rename": (
+            "karam_finance.reporting_currency.doctype.reporting_currency_gle.sync.on_gl_entry_rename"
+        ),
+    }
+)
+doc_events.setdefault("Journal Entry", {}).update(
+    {
+        # Journal Entry names are generated after before_insert, so keep the
+        # derived date fields and inherited Series in place before naming.
+        "before_insert": [
+            "karam_finance.karam_general.utils.date_fields.populate_karam_date_fields",
+            "karam_finance.karam_series.utils.hooks.populate_karam_series_from_source_document",
+        ],
+        "before_submit": (
+            "karam_finance.letter_reconciliation.utils.doc_events.je_before_submit"
+        ),
+        "on_update_after_submit": (
+            "karam_finance.letter_reconciliation.utils.doc_events.journal_entry_on_update_after_submit"
+        ),
+    }
+)
 
-# before_tests = "karam_finance.install.before_tests"
-
-# Extend DocType Class
-# ------------------------------
-#
-# Specify custom mixins to extend the standard doctype controller.
-# extend_doctype_class = {
-# 	"Task": "karam_finance.custom.task.CustomTaskMixin"
-# }
-
-# Overriding Methods
-# ------------------------------
-#
-# override_whitelisted_methods = {
-# 	"frappe.desk.doctype.event.event.get_events": "karam_finance.event.get_events"
-# }
-#
-# each overriding function accepts a `data` argument;
-# generated from the base implementation of the doctype dashboard,
-# along with any modifications made in other Frappe apps
-# override_doctype_dashboards = {
-# 	"Task": "karam_finance.task.get_dashboard_data"
-# }
-
-# exempt linked doctypes from being automatically cancelled
-#
-# auto_cancel_exempted_doctypes = ["Auto Repeat"]
-
-# Ignore links to specified DocTypes when deleting documents
-# -----------------------------------------------------------
-
-# ignore_links_on_delete = ["Communication", "ToDo"]
-
-# Request Events
-# ----------------
-# before_request = ["karam_finance.utils.before_request"]
-# after_request = ["karam_finance.utils.after_request"]
-
-# Job Events
-# ----------
-# before_job = ["karam_finance.utils.before_job"]
-# after_job = ["karam_finance.utils.after_job"]
-
-# User Data Protection
-# --------------------
-
-# user_data_fields = [
-# 	{
-# 		"doctype": "{doctype_1}",
-# 		"filter_by": "{filter_by}",
-# 		"redact_fields": ["{field_1}", "{field_2}"],
-# 		"partial": 1,
-# 	},
-# 	{
-# 		"doctype": "{doctype_2}",
-# 		"filter_by": "{filter_by}",
-# 		"partial": 1,
-# 	},
-# 	{
-# 		"doctype": "{doctype_3}",
-# 		"strict": False,
-# 	},
-# 	{
-# 		"doctype": "{doctype_4}"
-# 	}
-# ]
-
-# Authentication and authorization
-# --------------------------------
-
-# auth_hooks = [
-# 	"karam_finance.auth.validate"
-# ]
-
-# Automatically update python controller files with type annotations for this app.
-# export_python_type_annotations = True
-
-# default_log_clearing_doctypes = {
-# 	"Logging DocType Name": 30  # days to retain logs
-# }
-
-# Translation
-# ------------
-# List of apps whose translatable strings should be excluded from this app's translations.
-# ignore_translatable_strings_from = []
-
+# Top-level hook for ERPNext's rename_temporarily_named_docs() scheduled job.
+# This fires on_gle_rename (not the doc_event after_rename) so both paths are covered.
+on_gle_rename = [
+    "karam_finance.reporting_currency.doctype.reporting_currency_gle.sync.orchestrator.on_gle_rename_hook"
+]

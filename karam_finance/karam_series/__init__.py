@@ -1,0 +1,1 @@
+"""Karam Series module."""

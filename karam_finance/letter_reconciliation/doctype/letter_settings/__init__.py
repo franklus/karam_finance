@@ -1,0 +1,1 @@
+"""Letter Settings single doctype."""

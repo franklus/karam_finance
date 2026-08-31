@@ -1,0 +1,115 @@
+{
+  "actions": [],
+  "allow_rename": 1,
+  "creation": "2025-10-26 16:30:23.565935",
+  "doctype": "DocType",
+  "engine": "InnoDB",
+  "field_order": [
+    "sync_settings_section",
+    "reporting_currency",
+    "column_break_cbtt",
+    "last_sync_timestamp",
+    "section_break_rmwp",
+    "rc_parameters",
+    "account_exclusions_section",
+    "parent_account",
+    "add_accounts",
+    "remove_accounts",
+    "section_break_hxio",
+    "account_exclusions"
+  ],
+  "fields": [
+    {
+      "fieldname": "account_exclusions_section",
+      "fieldtype": "Section Break",
+      "label": "Account Exclusions"
+    },
+    {
+      "description": "Only non-group accounts can be added.",
+      "fieldname": "account_exclusions",
+      "fieldtype": "Table",
+      "label": "Account Exclusions",
+      "options": "Account Exclusions"
+    },
+    {
+      "fieldname": "add_accounts",
+      "fieldtype": "Button",
+      "label": "Add Accounts"
+    },
+    {
+      "description": "Excludes all child accounts under the defined parent",
+      "fieldname": "parent_account",
+      "fieldtype": "Link",
+      "label": "Parent Account",
+      "link_filters": "[[\"Account\",\"is_group\",\"=\",1]]",
+      "options": "Account"
+    },
+    {
+      "fieldname": "remove_accounts",
+      "fieldtype": "Button",
+      "label": "Remove Accounts"
+    },
+    {
+      "fieldname": "section_break_hxio",
+      "fieldtype": "Section Break"
+    },
+    {
+      "fieldname": "sync_settings_section",
+      "fieldtype": "Section Break"
+    },
+    {
+      "description": "Tracks the last successful sync. Use 'Delete All' button in Reporting Currency GLE list to trigger full sync.",
+      "fieldname": "last_sync_timestamp",
+      "fieldtype": "Datetime",
+      "label": "Last Sync Timestamp",
+      "no_copy": 1,
+      "read_only": 1
+    },
+    {
+      "fieldname": "section_break_rmwp",
+      "fieldtype": "Section Break"
+    },
+    {
+      "fieldname": "rc_parameters",
+      "fieldtype": "Table",
+      "label": "Reporting Currency Parameters",
+      "options": "Reporting Currency Parameters"
+    },
+    {
+      "fieldname": "reporting_currency",
+      "fieldtype": "Link",
+      "label": "Reporting Currency",
+      "options": "Currency"
+    },
+    {
+      "fieldname": "column_break_cbtt",
+      "fieldtype": "Column Break"
+    }
+  ],
+  "grid_page_length": 50,
+  "index_web_pages_for_search": 1,
+  "issingle": 1,
+  "links": [],
+  "modified": "2025-12-10 11:00:13.665816",
+  "modified_by": "Administrator",
+  "module": "Reporting Currency",
+  "name": "Reporting Currency Settings",
+  "owner": "Administrator",
+  "permissions": [
+    {
+      "create": 1,
+      "delete": 1,
+      "email": 1,
+      "print": 1,
+      "read": 1,
+      "role": "System Manager",
+      "share": 1,
+      "write": 1
+    }
+  ],
+  "row_format": "Dynamic",
+  "rows_threshold_for_grid_search": 20,
+  "sort_field": "modified",
+  "sort_order": "DESC",
+  "states": []
+}

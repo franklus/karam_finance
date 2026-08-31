@@ -1,0 +1,6 @@
+.git/
+node_modules/
+karam_finance/public/dist/
+karam_finance/public/js/lib/
+karam_finance/templates/includes/
+*.min.js

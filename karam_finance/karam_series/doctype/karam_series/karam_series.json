@@ -1,0 +1,265 @@
+{
+  "actions": [],
+  "allow_import": 1,
+  "allow_rename": 1,
+  "autoname": "field:karam_series",
+  "creation": "2024-06-12 13:16:26.386679",
+  "doctype": "DocType",
+  "engine": "InnoDB",
+  "field_order": [
+    "section_break_fqva",
+    "karam_series",
+    "column_break_nvtc",
+    "translation",
+    "section_break_7kdg",
+    "accounts",
+    "exchange_rate_revaluation",
+    "journal_entry",
+    "payment_entry",
+    "period_closing_voucher",
+    "purchase_invoice",
+    "purchase_order",
+    "sales_invoice",
+    "sales_order",
+    "column_break_ivat",
+    "assets",
+    "asset",
+    "asset_movement",
+    "column_break_xat6",
+    "hr",
+    "expense_claim",
+    "column_break_k2en",
+    "manufacturing",
+    "work_order",
+    "column_break_rrrr",
+    "payroll",
+    "payroll_entry",
+    "salary_slip",
+    "column_break_xaes",
+    "stock",
+    "delivery_note",
+    "landed_cost_voucher",
+    "purchase_receipt",
+    "stock_entry",
+    "stock_reconciliation"
+  ],
+  "fields": [
+    {
+      "fieldname": "section_break_fqva",
+      "fieldtype": "Section Break"
+    },
+    {
+      "fieldname": "karam_series",
+      "fieldtype": "Data",
+      "in_list_view": 1,
+      "label": "Karam Series",
+      "unique": 1
+    },
+    {
+      "fieldname": "translation",
+      "fieldtype": "Data",
+      "in_list_view": 1,
+      "label": "Translation"
+    },
+    {
+      "fieldname": "column_break_nvtc",
+      "fieldtype": "Column Break"
+    },
+    {
+      "fieldname": "section_break_7kdg",
+      "fieldtype": "Section Break",
+      "label": "<h3>Applicable On</h3>"
+    },
+    {
+      "fieldname": "stock",
+      "fieldtype": "Heading",
+      "label": "<h4>Stock</h4>"
+    },
+    {
+      "default": "0",
+      "fieldname": "landed_cost_voucher",
+      "fieldtype": "Check",
+      "label": "Landed Cost Voucher"
+    },
+    {
+      "default": "0",
+      "fieldname": "stock_entry",
+      "fieldtype": "Check",
+      "label": "Stock Entry"
+    },
+    {
+      "default": "0",
+      "fieldname": "delivery_note",
+      "fieldtype": "Check",
+      "label": "Delivery Note"
+    },
+    {
+      "default": "0",
+      "fieldname": "purchase_receipt",
+      "fieldtype": "Check",
+      "label": "Purchase Receipt"
+    },
+    {
+      "fieldname": "column_break_ivat",
+      "fieldtype": "Column Break"
+    },
+    {
+      "fieldname": "accounts",
+      "fieldtype": "Heading",
+      "label": "<h4>Accounts</h4>"
+    },
+    {
+      "default": "0",
+      "fieldname": "purchase_order",
+      "fieldtype": "Check",
+      "label": "Purchase Order"
+    },
+    {
+      "default": "0",
+      "fieldname": "purchase_invoice",
+      "fieldtype": "Check",
+      "label": "Purchase Invoice"
+    },
+    {
+      "default": "0",
+      "fieldname": "sales_invoice",
+      "fieldtype": "Check",
+      "label": "Sales Invoice"
+    },
+    {
+      "default": "0",
+      "fieldname": "payment_entry",
+      "fieldtype": "Check",
+      "label": "Payment Entry"
+    },
+    {
+      "default": "0",
+      "fieldname": "journal_entry",
+      "fieldtype": "Check",
+      "label": "Journal Entry"
+    },
+    {
+      "default": "0",
+      "fieldname": "period_closing_voucher",
+      "fieldtype": "Check",
+      "label": "Period Closing Voucher"
+    },
+    {
+      "default": "0",
+      "fieldname": "sales_order",
+      "fieldtype": "Check",
+      "label": "Sales Order"
+    },
+    {
+      "fieldname": "column_break_xat6",
+      "fieldtype": "Column Break"
+    },
+    {
+      "fieldname": "assets",
+      "fieldtype": "Heading",
+      "label": "<h4>Assets</h4>"
+    },
+    {
+      "default": "0",
+      "fieldname": "asset_movement",
+      "fieldtype": "Check",
+      "label": "Asset Movement"
+    },
+    {
+      "fieldname": "column_break_xaes",
+      "fieldtype": "Column Break"
+    },
+    {
+      "fieldname": "payroll",
+      "fieldtype": "Heading",
+      "label": "<h4>Payroll</h4>"
+    },
+    {
+      "default": "0",
+      "fieldname": "expense_claim",
+      "fieldtype": "Check",
+      "label": "Expense Claim"
+    },
+    {
+      "default": "0",
+      "fieldname": "salary_slip",
+      "fieldtype": "Check",
+      "label": "Salary Slip"
+    },
+    {
+      "default": "0",
+      "fieldname": "payroll_entry",
+      "fieldtype": "Check",
+      "label": "Payroll Entry"
+    },
+    {
+      "default": "0",
+      "fieldname": "exchange_rate_revaluation",
+      "fieldtype": "Check",
+      "label": "Exchange Rate Revaluation"
+    },
+    {
+      "default": "0",
+      "fieldname": "asset",
+      "fieldtype": "Check",
+      "label": "Asset"
+    },
+    {
+      "default": "0",
+      "fieldname": "stock_reconciliation",
+      "fieldtype": "Check",
+      "label": "Stock Reconciliation"
+    },
+    {
+      "fieldname": "hr",
+      "fieldtype": "Heading",
+      "label": "<h4>HR</h4>"
+    },
+    {
+      "fieldname": "manufacturing",
+      "fieldtype": "Heading",
+      "label": "<h4>Manufacturing</h4>"
+    },
+    {
+      "default": "0",
+      "fieldname": "work_order",
+      "fieldtype": "Check",
+      "label": "Work Order"
+    },
+    {
+      "fieldname": "column_break_k2en",
+      "fieldtype": "Column Break"
+    },
+    {
+      "fieldname": "column_break_rrrr",
+      "fieldtype": "Column Break"
+    }
+  ],
+  "index_web_pages_for_search": 1,
+  "links": [],
+  "modified": "2025-09-17 09:34:17.069938",
+  "modified_by": "Administrator",
+  "module": "Karam Series",
+  "name": "Karam Series",
+  "naming_rule": "By fieldname",
+  "owner": "Administrator",
+  "permissions": [
+    {
+      "create": 1,
+      "delete": 1,
+      "email": 1,
+      "export": 1,
+      "print": 1,
+      "read": 1,
+      "report": 1,
+      "role": "System Manager",
+      "share": 1,
+      "write": 1
+    }
+  ],
+  "row_format": "Dynamic",
+  "sort_field": "creation",
+  "sort_order": "DESC",
+  "states": [],
+  "track_changes": 1
+}

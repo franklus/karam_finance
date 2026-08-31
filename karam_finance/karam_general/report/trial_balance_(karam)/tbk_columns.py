@@ -1,0 +1,117 @@
+from frappe import _
+
+
+def get_columns():
+    return [
+        {
+            "fieldname": "account",
+            "label": _("Account"),
+            "fieldtype": "Link",
+            "options": "Account",
+            "width": 300,
+        },
+        {
+            "fieldname": "account_currency",
+            "label": _("Account Currency"),
+            "fieldtype": "Link",
+            "options": "Currency",
+            "width": 80,
+        },
+        {
+            "fieldname": "is_group",
+            "label": _("Is Group"),
+            "fieldtype": "Check",
+            "width": 80,
+        },
+        {
+            "fieldname": "currency",
+            "label": _("Currency"),
+            "fieldtype": "Link",
+            "options": "Currency",
+            "hidden": 1,
+        },
+        {
+            "fieldname": "opening_debit",
+            "label": _("Opening (Dr)"),
+            "fieldtype": "Currency",
+            "options": "currency",
+            "width": 120,
+        },
+        {
+            "fieldname": "opening_credit",
+            "label": _("Opening (Cr)"),
+            "fieldtype": "Currency",
+            "options": "currency",
+            "width": 120,
+        },
+        {
+            "fieldname": "debit",
+            "label": _("Debit"),
+            "fieldtype": "Currency",
+            "options": "currency",
+            "width": 120,
+        },
+        {
+            "fieldname": "credit",
+            "label": _("Credit"),
+            "fieldtype": "Currency",
+            "options": "currency",
+            "width": 120,
+        },
+        {
+            "fieldname": "closing_debit",
+            "label": _("Closing (Dr)"),
+            "fieldtype": "Currency",
+            "options": "currency",
+            "width": 120,
+        },
+        {
+            "fieldname": "closing_credit",
+            "label": _("Closing (Cr)"),
+            "fieldtype": "Currency",
+            "options": "currency",
+            "width": 120,
+        },
+        {
+            "fieldname": "opening_debit_in_account_currency",
+            "label": _("Opening Dr (Account Ccy)"),
+            "fieldtype": "Currency",
+            "options": "account_currency",
+            "width": 140,
+        },
+        {
+            "fieldname": "opening_credit_in_account_currency",
+            "label": _("Opening Cr (Account Ccy)"),
+            "fieldtype": "Currency",
+            "options": "account_currency",
+            "width": 140,
+        },
+        {
+            "fieldname": "debit_in_account_currency",
+            "label": _("Movement Dr (Account Ccy)"),
+            "fieldtype": "Currency",
+            "options": "account_currency",
+            "width": 140,
+        },
+        {
+            "fieldname": "credit_in_account_currency",
+            "label": _("Movement Cr (Account Ccy)"),
+            "fieldtype": "Currency",
+            "options": "account_currency",
+            "width": 140,
+        },
+        {
+            "fieldname": "closing_debit_in_account_currency",
+            "label": _("Closing Dr (Account Ccy)"),
+            "fieldtype": "Currency",
+            "options": "account_currency",
+            "width": 140,
+        },
+        {
+            "fieldname": "closing_credit_in_account_currency",
+            "label": _("Closing Cr (Account Ccy)"),
+            "fieldtype": "Currency",
+            "options": "account_currency",
+            "width": 140,
+        },
+    ]

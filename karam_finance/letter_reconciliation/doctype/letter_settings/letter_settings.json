@@ -1,0 +1,54 @@
+{
+  "actions": [],
+  "allow_rename": 1,
+  "creation": "2025-07-03 19:28:09.693897",
+  "default_view": "List",
+  "doctype": "DocType",
+  "engine": "InnoDB",
+  "field_order": ["year", "column_break_muyn", "letter"],
+  "fields": [
+    {
+      "fieldname": "letter",
+      "fieldtype": "Data",
+      "label": "Current Letter"
+    },
+    {
+      "fieldname": "column_break_muyn",
+      "fieldtype": "Column Break"
+    },
+    {
+      "fieldname": "year",
+      "fieldtype": "Int",
+      "label": "Year",
+      "unique": 1
+    }
+  ],
+  "grid_page_length": 50,
+  "index_web_pages_for_search": 1,
+  "links": [],
+  "modified": "2025-07-03 19:32:06.775345",
+  "modified_by": "Administrator",
+  "module": "Letter Reconciliation",
+  "name": "Letter Settings",
+  "autoname": "field:year",
+  "owner": "Administrator",
+  "permissions": [
+    {
+      "create": 1,
+      "delete": 1,
+      "email": 1,
+      "export": 1,
+      "print": 1,
+      "read": 1,
+      "report": 1,
+      "role": "System Manager",
+      "share": 1,
+      "write": 1
+    }
+  ],
+  "row_format": "Dynamic",
+  "sort_field": "modified",
+  "sort_order": "DESC",
+  "states": [],
+  "title_field": "year"
+}

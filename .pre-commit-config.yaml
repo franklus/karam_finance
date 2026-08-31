@@ -1,69 +1,55 @@
-exclude: 'node_modules|.git'
+exclude: ^(node_modules/|karam_finance/public/dist/)
 default_stages: [pre-commit]
 fail_fast: false
-
 
 repos:
   - repo: https://github.com/pre-commit/pre-commit-hooks
     rev: v6.0.0
     hooks:
-      - id: trailing-whitespace
-        files: "karam_finance.*"
-        exclude: ".*json$|.*txt$|.*csv|.*md|.*svg"
-      - id: check-merge-conflict
       - id: check-ast
       - id: check-json
+      - id: check-merge-conflict
       - id: check-toml
       - id: check-yaml
       - id: debug-statements
+      - id: end-of-file-fixer
+        exclude: ^karam_finance/.*\.json$
+      - id: trailing-whitespace
+        exclude: ^karam_finance/.*\.(json|md|svg|txt)$
 
   - repo: https://github.com/astral-sh/ruff-pre-commit
-    rev: v0.14.10
+    rev: v0.16.2
     hooks:
-      - id: ruff
-        name: "Run ruff import sorter"
-        args: ["--select=I", "--fix"]
-
-      - id: ruff
-        name: "Run ruff linter"
-
+      - id: ruff-check
       - id: ruff-format
-        name: "Run ruff formatter"
+        args: [--check]
+        stages: [manual]
 
-  - repo: https://github.com/pre-commit/mirrors-prettier
-    rev: v2.7.1
+  - repo: local
     hooks:
-      - id: prettier
-        types_or: [javascript, vue, scss]
-        # Ignore any files that might contain jinja / bundles
-        exclude: |
-            (?x)^(
-                karam_finance/public/dist/.*|
-                .*node_modules.*|
-                .*boilerplate.*|
-                karam_finance/templates/includes/.*|
-                karam_finance/public/js/lib/.*
-            )$
+      - id: pyrefly
+        name: pyrefly
+        entry: bash tools/run_pyrefly.sh
+        language: system
+        pass_filenames: false
+        types: [python]
 
-
-  - repo: https://github.com/pre-commit/mirrors-eslint
-    rev: v8.44.0
-    hooks:
       - id: eslint
-        types_or: [javascript]
-        args: ['--quiet']
-        # Ignore any files that might contain jinja / bundles
-        exclude: |
-            (?x)^(
-                karam_finance/public/dist/.*|
-                cypress/.*|
-                .*node_modules.*|
-                .*boilerplate.*|
-                karam_finance/templates/includes/.*|
-                karam_finance/public/js/lib/.*
-            )$
+        name: eslint
+        entry: npm run lint:js --
+        language: system
+        pass_filenames: false
+        files: \.(js|mjs|cjs)$
+
+      - id: prettier
+        name: prettier
+        entry: npm run format:check --
+        language: system
+        pass_filenames: false
+        files: \.(js|css|scss|vue)$
+        stages: [manual]
 
 ci:
-    autoupdate_schedule: weekly
-    skip: []
-    submodules: false
+  autoupdate_schedule: weekly
+  skip: [pyrefly, eslint, prettier]
+  submodules: false

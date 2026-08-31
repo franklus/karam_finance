@@ -1,0 +1,142 @@
+{
+  "actions": [],
+  "creation": "2025-06-29 00:00:00",
+  "doctype": "DocType",
+  "engine": "InnoDB",
+  "field_order": [
+    "journal_entry",
+    "credit",
+    "column_break_1",
+    "jv_row_name",
+    "letter",
+    "column_break_2",
+    "account",
+    "posting_date",
+    "party_details_section",
+    "party_type",
+    "column_break_golb",
+    "party",
+    "column_break_zoyr",
+    "party_name",
+    "section_break_8zee",
+    "user_remark"
+  ],
+  "fields": [
+    {
+      "columns": 2,
+      "fieldname": "journal_entry",
+      "fieldtype": "Link",
+      "in_list_view": 1,
+      "label": "Journal Entry",
+      "options": "Journal Entry",
+      "read_only": 1
+    },
+    {
+      "columns": 1,
+      "fieldname": "credit",
+      "fieldtype": "Currency",
+      "in_list_view": 1,
+      "label": "Credit",
+      "read_only": 1
+    },
+    {
+      "fieldname": "jv_row_name",
+      "fieldtype": "Data",
+      "label": "JV Row Name",
+      "read_only": 1
+    },
+    {
+      "columns": 1,
+      "fieldname": "letter",
+      "fieldtype": "Data",
+      "in_list_view": 1,
+      "label": "Letter",
+      "read_only": 1
+    },
+    {
+      "columns": 2,
+      "fieldname": "account",
+      "fieldtype": "Link",
+      "in_list_view": 1,
+      "label": "Account",
+      "options": "Account",
+      "read_only": 1
+    },
+    {
+      "columns": 1,
+      "fieldname": "posting_date",
+      "fieldtype": "Date",
+      "in_list_view": 1,
+      "label": "Posting Date",
+      "read_only": 1
+    },
+    {
+      "columns": 2,
+      "fieldname": "user_remark",
+      "fieldtype": "Small Text",
+      "in_list_view": 1,
+      "label": "User Remark",
+      "read_only": 1
+    },
+    {
+      "fieldname": "column_break_1",
+      "fieldtype": "Column Break"
+    },
+    {
+      "fieldname": "column_break_2",
+      "fieldtype": "Column Break"
+    },
+    {
+      "fieldname": "section_break_8zee",
+      "fieldtype": "Section Break"
+    },
+    {
+      "fieldname": "party_type",
+      "fieldtype": "Link",
+      "label": "Party Type",
+      "options": "DocType",
+      "read_only": 1
+    },
+    {
+      "fieldname": "party",
+      "fieldtype": "Dynamic Link",
+      "label": "Party",
+      "options": "party_type",
+      "read_only": 1
+    },
+    {
+      "columns": 1,
+      "fieldname": "party_name",
+      "fieldtype": "Data",
+      "in_list_view": 1,
+      "label": "Party Name",
+      "read_only": 1
+    },
+    {
+      "fieldname": "party_details_section",
+      "fieldtype": "Section Break",
+      "label": "Party Details"
+    },
+    {
+      "fieldname": "column_break_golb",
+      "fieldtype": "Column Break"
+    },
+    {
+      "fieldname": "column_break_zoyr",
+      "fieldtype": "Column Break"
+    }
+  ],
+  "index_web_pages_for_search": 1,
+  "istable": 1,
+  "links": [],
+  "modified": "2026-03-12 05:27:16.475374",
+  "modified_by": "Administrator",
+  "module": "Letter Reconciliation",
+  "name": "JV Letter Credit",
+  "owner": "Administrator",
+  "permissions": [],
+  "row_format": "Dynamic",
+  "sort_field": "modified",
+  "sort_order": "DESC",
+  "states": []
+}

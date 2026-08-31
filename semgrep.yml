@@ -1,0 +1,9 @@
+rules:
+  - id: karam-old-package-reference
+    languages: [python]
+    message: Runtime code must use the karam_finance package name.
+    severity: ERROR
+    paths:
+      include:
+        - karam_finance/
+    pattern-regex: (?:from|import)\s+karam_accounts|["']karam_accounts\.

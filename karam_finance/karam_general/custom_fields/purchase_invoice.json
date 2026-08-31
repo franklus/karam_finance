@@ -1,0 +1,56 @@
+{
+  "Purchase Invoice": [
+    {
+      "fieldname": "karam_posting_date",
+      "fieldtype": "Data",
+      "insert_after": "karam_series_sb2",
+      "label": "Karam Posting Date",
+      "read_only": 1,
+      "no_copy": 1
+    },
+    {
+      "fieldname": "karam_pd_cb",
+      "fieldtype": "Column Break",
+      "insert_after": "karam_posting_date"
+    },
+    {
+      "fieldname": "karam_posting_year",
+      "fieldtype": "Data",
+      "insert_after": "karam_pd_cb",
+      "label": "Karam Posting Year",
+      "read_only": 1,
+      "no_copy": 1
+    },
+    {
+      "fieldname": "karam_py_cb",
+      "fieldtype": "Column Break",
+      "insert_after": "karam_posting_year"
+    },
+    {
+      "fieldname": "karam_posting_month",
+      "fieldtype": "Data",
+      "insert_after": "karam_py_cb",
+      "label": "Karam Posting Month",
+      "read_only": 1,
+      "no_copy": 1
+    },
+    {
+      "fieldname": "karam_pm_cb",
+      "fieldtype": "Column Break",
+      "insert_after": "karam_posting_month"
+    },
+    {
+      "fieldname": "karam_posting_day",
+      "fieldtype": "Data",
+      "insert_after": "karam_pm_cb",
+      "label": "Karam Posting Day",
+      "read_only": 1,
+      "no_copy": 1
+    },
+    {
+      "fieldname": "karam_series_sb3",
+      "fieldtype": "Section Break",
+      "insert_after": "karam_posting_day"
+    }
+  ]
+}

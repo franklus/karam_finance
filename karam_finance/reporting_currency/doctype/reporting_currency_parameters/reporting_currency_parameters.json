@@ -1,0 +1,88 @@
+{
+  "actions": [],
+  "allow_rename": 1,
+  "creation": "2025-12-02 18:45:44.289267",
+  "doctype": "DocType",
+  "editable_grid": 1,
+  "engine": "InnoDB",
+  "field_order": [
+    "section_break_yhmf",
+    "doe_posting_date",
+    "column_break_a6gb",
+    "exchange_rate",
+    "section_break_agew",
+    "profit_account",
+    "column_break_jrav",
+    "loss_account"
+  ],
+  "fields": [
+    {
+      "columns": 3,
+      "fieldname": "doe_posting_date",
+      "fieldtype": "Date",
+      "in_list_view": 1,
+      "label": "DOE Posting Date",
+      "reqd": 1
+    },
+    {
+      "columns": 3,
+      "description": "Reporting Currency \u2192 Company Currency",
+      "fieldname": "exchange_rate",
+      "fieldtype": "Float",
+      "in_list_view": 1,
+      "label": "Exchange Rate",
+      "non_negative": 1,
+      "reqd": 1
+    },
+    {
+      "columns": 2,
+      "fieldname": "profit_account",
+      "fieldtype": "Link",
+      "in_list_view": 1,
+      "label": "Profit Account",
+      "options": "Account",
+      "reqd": 1
+    },
+    {
+      "columns": 2,
+      "fieldname": "loss_account",
+      "fieldtype": "Link",
+      "in_list_view": 1,
+      "label": "Loss Account",
+      "options": "Account",
+      "reqd": 1
+    },
+    {
+      "fieldname": "column_break_a6gb",
+      "fieldtype": "Column Break"
+    },
+    {
+      "fieldname": "section_break_agew",
+      "fieldtype": "Section Break",
+      "label": "Profit and Loss Accounts"
+    },
+    {
+      "fieldname": "column_break_jrav",
+      "fieldtype": "Column Break"
+    },
+    {
+      "fieldname": "section_break_yhmf",
+      "fieldtype": "Section Break"
+    }
+  ],
+  "grid_page_length": 50,
+  "index_web_pages_for_search": 1,
+  "istable": 1,
+  "links": [],
+  "modified": "2025-12-17 13:39:59.219969",
+  "modified_by": "Administrator",
+  "module": "Reporting Currency",
+  "name": "Reporting Currency Parameters",
+  "owner": "Administrator",
+  "permissions": [],
+  "row_format": "Dynamic",
+  "rows_threshold_for_grid_search": 20,
+  "sort_field": "modified",
+  "sort_order": "DESC",
+  "states": []
+}

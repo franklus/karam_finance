@@ -1,0 +1,13 @@
+{
+  "Journal Entry Account": [
+    {
+      "label": "Letter",
+      "fieldname": "letter",
+      "insert_after": "account",
+      "fieldtype": "Data",
+      "allow_on_submit": 1,
+      "read_only": 1,
+      "no_copy": 1
+    }
+  ]
+}

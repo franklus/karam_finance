@@ -1,0 +1,17 @@
+{
+  "Stock Settings": [
+    {
+      "fieldname": "ka_item_price_mismatch_doctypes",
+      "fieldtype": "Table",
+      "insert_after": "update_existing_price_list_rate",
+      "label": "Doctypes For New Item Price Prompt",
+      "options": "Item Price Mismatch Doctype"
+    },
+    {
+      "fieldname": "ka_item_price_mismatch_doctypes_help",
+      "fieldtype": "HTML",
+      "insert_after": "ka_item_price_mismatch_doctypes",
+      "options": "<div class=\"text-muted small\" style=\"margin-top: 8px;\">Choose the transaction doctypes where users should be prompted to create a new Item Price when the entered rate differs from the existing Item Price.</div>"
+    }
+  ]
+}

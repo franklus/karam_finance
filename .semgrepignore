@@ -1,0 +1,11 @@
+.git/
+build/
+dist/
+node_modules/
+**/__pycache__/
+**/*.pyc
+**/*.pyo
+**/*.egg-info/
+**/fixtures/
+**/test_data/
+karam_finance/public/dist/

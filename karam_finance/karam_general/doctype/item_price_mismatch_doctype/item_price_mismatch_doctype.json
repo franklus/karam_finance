@@ -1,0 +1,83 @@
+{
+  "actions": [],
+  "allow_rename": 1,
+  "creation": "2026-04-17 17:35:00",
+  "doctype": "DocType",
+  "editable_grid": 1,
+  "engine": "InnoDB",
+  "field_order": [
+    "section_break_wqdv",
+    "doctype_name",
+    "enabled",
+    "behaviour_section",
+    "update_item_price",
+    "behaviour_col_brk",
+    "throw_exception"
+  ],
+  "fields": [
+    {
+      "fieldname": "section_break_wqdv",
+      "fieldtype": "Section Break"
+    },
+    {
+      "columns": 4,
+      "fieldname": "doctype_name",
+      "fieldtype": "Link",
+      "in_list_view": 1,
+      "label": "Doctype Name",
+      "options": "DocType",
+      "read_only": 1,
+      "reqd": 1
+    },
+    {
+      "columns": 2,
+      "default": "0",
+      "fieldname": "enabled",
+      "fieldtype": "Check",
+      "in_list_view": 1,
+      "label": "Enabled"
+    },
+    {
+      "fieldname": "behaviour_section",
+      "fieldtype": "Section Break",
+      "label": "Behaviour"
+    },
+    {
+      "columns": 2,
+      "default": "0",
+      "description": "Update the existing same-date Item Price instead of creating another record.",
+      "fieldname": "update_item_price",
+      "fieldtype": "Check",
+      "in_list_view": 1,
+      "label": "Update Item Price"
+    },
+    {
+      "fieldname": "behaviour_col_brk",
+      "fieldtype": "Column Break"
+    },
+    {
+      "columns": 2,
+      "default": "1",
+      "description": "Stop the user when a same-date Item Price already exists for the item and party.",
+      "fieldname": "throw_exception",
+      "fieldtype": "Check",
+      "in_list_view": 1,
+      "label": "Block Same-Date Duplicate"
+    }
+  ],
+  "grid_page_length": 20,
+  "index_web_pages_for_search": 1,
+  "istable": 1,
+  "links": [],
+  "modified": "2026-05-04 16:27:03.362398",
+  "modified_by": "Administrator",
+  "module": "Karam General",
+  "name": "Item Price Mismatch Doctype",
+  "owner": "Administrator",
+  "permissions": [],
+  "row_format": "Dynamic",
+  "rows_threshold_for_grid_search": 20,
+  "sort_field": "creation",
+  "sort_order": "ASC",
+  "states": []
+}
