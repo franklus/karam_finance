@@ -147,7 +147,7 @@ class TestReportPortContracts(TestCase):
         sql = Criterion.all(module._build_qb_date_conditions(filters, gl)).get_sql()
         assert "OR" in sql
         assert "is_opening" in sql
-        filters._ignore_is_opening = 1
+        filters._ignore_is_opening = 1  # noqa: V101 - report reads the filter through mapping access.
         sql = Criterion.all(module._build_qb_date_conditions(filters, gl)).get_sql()
         assert "is_opening" not in sql
 

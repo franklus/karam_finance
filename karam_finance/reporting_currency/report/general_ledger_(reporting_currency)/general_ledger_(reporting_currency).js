@@ -718,9 +718,10 @@ frappe.query_reports["General Ledger (Reporting Currency)"] = {
 
 // Dynamic dimensions are added only after the server confirms RC storage support.
 
-frappe.query_reports["General Ledger (Reporting Currency)"].filters = frappe.query_reports[
-  "General Ledger (Reporting Currency)"
-].filters.filter((filter) => !["letter", "show_letter"].includes(filter.fieldname));
+frappe.query_reports["General Ledger (Reporting Currency)"].filters =
+  frappe.query_reports["General Ledger (Reporting Currency)"].filters.filter(
+    (filter) => !["letter", "show_letter"].includes(filter.fieldname)
+  );
 frappe.query_reports["General Ledger (Reporting Currency)"].filters.push(
   {
     fieldname: "show_source_currency_columns",

@@ -103,7 +103,7 @@ def _normalise_date(value: object) -> str | None:
     # four derived fields are cleared together instead of exposing partial
     # tokens or triggering locale-dependent parsing.
     try:
-        return datetime.fromisoformat(text.replace("Z", "+00:00")).date().isoformat()
+        return datetime.fromisoformat(text).date().isoformat()
     except ValueError:
         return None
 
@@ -157,7 +157,7 @@ def _get_doc_value(doc: Document, fieldname: str | None) -> object:
     return getattr(doc, fieldname, None)
 
 
-def _get_source_date(doc: Document) -> date | datetime | str | None:
+def _get_source_date(doc: Document) -> date | datetime | str | None:  # noqa: V103 - retained business-date compatibility wrapper.
     """Return the explicitly mapped business date for compatibility callers."""
 
     value = _get_doc_value(doc, _BUSINESS_DATE_FIELDS.get(doc.doctype))

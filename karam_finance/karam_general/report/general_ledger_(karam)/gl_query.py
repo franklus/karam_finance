@@ -75,7 +75,7 @@ def get_gl_entries(
     account = frappe.qb.DocType("Account")
     query = frappe.qb.from_(gl).left_join(account).on(gl.account == account.name)
 
-    if filters.get("karam_series") or filters.get("translation"):
+    if _has_voucher_filters(filters):
         voucher_data = _get_voucher_data_for_filters(filters)
 
     criteria = _build_qb_conditions(filters, gl, voucher_data)
@@ -437,7 +437,7 @@ def _build_qb_karam_conditions(
 
     if joined_voucher_conditions:
         conditions.append(Criterion.any(joined_voucher_conditions))
-    elif filters.get("karam_series") or filters.get("translation"):
+    elif _has_voucher_filters(filters):
         conditions.append(_voucher_pair_condition(gl, voucher_data))
 
     return conditions
@@ -598,42 +598,7 @@ def _build_voucher_conditions(filters: dict[str, Any]) -> list[str]:
     if filters.get("against_voucher_no"):
         conditions.append("gl.against_voucher=%(against_voucher_no)s")
     if filters.get("ignore_err") or filters.get("ignore_cr_dr_notes"):
-        excluded = list(filters.get("voucher_no_not_in") or [])
-        if filters.get("ignore_err"):
-            excluded.extend(
-                row[0]
-                for row in frappe.get_all(
-                    "Journal Entry",
-                    filters={
-                        "company": filters.get("company"),
-                        "docstatus": 1,
-                        "voucher_type": (
-                            "in",
-                            ["Exchange Rate Revaluation", "Exchange Gain Or Loss"],
-                        ),
-                    },
-                    fields=["name"],
-                    as_list=True,
-                    limit_page_length=_MAX_LOOKUP_VALUES,
-                )
-            )
-        if filters.get("ignore_cr_dr_notes"):
-            excluded.extend(
-                row[0]
-                for row in frappe.get_all(
-                    "Journal Entry",
-                    filters={
-                        "company": filters.get("company"),
-                        "docstatus": 1,
-                        "voucher_type": ("in", ["Credit Note", "Debit Note"]),
-                        "is_system_generated": 1,
-                    },
-                    fields=["name"],
-                    as_list=True,
-                    limit_page_length=_MAX_LOOKUP_VALUES,
-                )
-            )
-        filters["voucher_no_not_in"] = list(dict.fromkeys(excluded))
+        _populate_excluded_vouchers(filters)
     if filters.get("voucher_no_not_in"):
         conditions.append("gl.voucher_no not in %(voucher_no_not_in)s")
     return conditions
@@ -785,7 +750,7 @@ def get_flat_account_currency_openings(
     account = frappe.qb.DocType("Account")
     currency = _account_currency_expression(gl)
     voucher_data = None
-    if opening_filters.get("karam_series") or opening_filters.get("translation"):
+    if _has_voucher_filters(opening_filters):
         voucher_data = _get_voucher_data_for_filters(opening_filters)
     criteria = _build_qb_conditions(opening_filters, gl, voucher_data)
     if match_conditions := build_match_conditions("GL Entry"):
@@ -851,3 +816,46 @@ def _voucher_pair_condition(
             for doctype, name in pairs
         ]
     )
+
+
+def _populate_excluded_vouchers(filters: dict[str, Any]) -> None:
+    excluded = list(filters.get("voucher_no_not_in") or [])
+    if filters.get("ignore_err"):
+        excluded.extend(
+            row[0]
+            for row in frappe.get_all(
+                "Journal Entry",
+                filters={
+                    "company": filters.get("company"),
+                    "docstatus": 1,
+                    "voucher_type": (
+                        "in",
+                        ["Exchange Rate Revaluation", "Exchange Gain Or Loss"],
+                    ),
+                },
+                fields=["name"],
+                as_list=True,
+                limit_page_length=_MAX_LOOKUP_VALUES,
+            )
+        )
+    if filters.get("ignore_cr_dr_notes"):
+        excluded.extend(
+            row[0]
+            for row in frappe.get_all(
+                "Journal Entry",
+                filters={
+                    "company": filters.get("company"),
+                    "docstatus": 1,
+                    "voucher_type": ("in", ["Credit Note", "Debit Note"]),
+                    "is_system_generated": 1,
+                },
+                fields=["name"],
+                as_list=True,
+                limit_page_length=_MAX_LOOKUP_VALUES,
+            )
+        )
+    filters["voucher_no_not_in"] = list(dict.fromkeys(excluded))
+
+
+def _has_voucher_filters(filters: dict[str, Any]) -> bool:
+    return bool(filters.get("karam_series") or filters.get("translation"))

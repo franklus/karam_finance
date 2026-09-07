@@ -27,7 +27,7 @@ DOCTYPE_RC_GLE = "Reporting Currency GLE"
 # ============================================================================
 
 
-def convert_amounts(
+def convert_amounts(  # noqa: PLR0917 - retain positional sync conversion callers.
     gle_record: dict[str, Any], rate: float, direction: str, reporting_currency: str
 ) -> tuple[float, float]:
     """Convert debit/credit amounts (in company currency) to reporting currency.
@@ -74,7 +74,7 @@ def convert_amounts(
 # ============================================================================
 
 
-def process_gl_entry(
+def process_gl_entry(  # noqa: PLR0913, PLR0917 - retain the sync conversion compatibility signature.
     gle: dict[str, Any],
     rate_timeline: list[dict[str, Any]],
     rate_dates: list[Any],
@@ -137,10 +137,7 @@ def process_gl_entry(
         )
 
         # For display, show the effective rate applied to convert default → reporting
-        if direction == "direct":
-            exchange_rate_used = flt(rate)
-        else:
-            exchange_rate_used = flt(1 / rate) if rate else 0
+        exchange_rate_used = _effective_exchange_rate(rate, direction)
 
     # Ensure date is serialized as ISO string for DB insert
     if currency_exchange_date and not isinstance(currency_exchange_date, str):
@@ -171,12 +168,12 @@ def process_gl_entry(
         "voucher_detail_no": gle.get("voucher_detail_no"),
         "transaction_exchange_rate": gle.get("transaction_exchange_rate"),
         "debit_amount_in_account_currency": gle.get("debit_in_account_currency"),
-        "debit": flt(gle.get("debit"), 9),
+        "debit": flt(gle.get("debit") or 0, 9),
         "debit_amount_in_transaction_currency": gle.get(
             "debit_in_transaction_currency"
         ),
         "credit_amount_in_account_currency": gle.get("credit_in_account_currency"),
-        "credit": flt(gle.get("credit"), 9),
+        "credit": flt(gle.get("credit") or 0, 9),
         "credit_in_transaction_currency": gle.get("credit_in_transaction_currency"),
         "reporting_debit": reporting_debit,
         "reporting_credit": reporting_credit,
@@ -202,3 +199,9 @@ def process_gl_entry(
         "owner": frappe.session.user,
         "modified_by": frappe.session.user,
     }
+
+
+def _effective_exchange_rate(rate: float, direction: str) -> float:
+    if direction == "direct":
+        return flt(rate)
+    return flt(1 / rate) if rate else 0

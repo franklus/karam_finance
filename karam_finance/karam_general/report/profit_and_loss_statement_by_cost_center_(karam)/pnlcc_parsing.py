@@ -1,22 +1,24 @@
+from collections.abc import Iterable
+
 import frappe
 
 
 def parse_multiselect(value: object) -> list[str]:
     if not value:
         return []
-    if isinstance(value, (list, tuple, set)):
-        return [c for c in (str(v).strip() for v in value) if c]
     if isinstance(value, str):
         try:
-            parsed = frappe.parse_json(value)
+            value = frappe.parse_json(value)
         except ValueError:
-            return [c for c in (part.strip() for part in value.split(",")) if c]
-        if isinstance(parsed, (list, tuple, set)):
-            return [c for c in (str(v).strip() for v in parsed) if c]
-        parsed_str = str(parsed).strip()
-        return [parsed_str] if parsed_str else []
-    parsed_str = str(value).strip()
-    return [parsed_str] if parsed_str else []
+            return _string_values(value.split(","))
+    if isinstance(value, (list, tuple, set)):
+        return _string_values(value)
+    parsed = str(value).strip()
+    return [parsed] if parsed else []
+
+
+def _string_values(values: Iterable[object]) -> list[str]:
+    return [cleaned for value in values if (cleaned := str(value).strip())]
 
 
 def first_str(val: object) -> str | None:

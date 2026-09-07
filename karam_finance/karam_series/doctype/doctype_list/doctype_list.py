@@ -3,5 +3,5 @@
 from frappe.model.document import Document
 
 
-class DoctypeList(Document):
+class DoctypeList(Document):  # noqa: V102 - Frappe child DocType controller loader.
     """Doctype list row."""

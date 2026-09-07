@@ -1,7 +1,9 @@
+from typing import Any
+
 from frappe import _
 
 
-def get_columns():
+def get_columns() -> list[dict[str, Any]]:
     return [
         {
             "fieldname": "posting_date",

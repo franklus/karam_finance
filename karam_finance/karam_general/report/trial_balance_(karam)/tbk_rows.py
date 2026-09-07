@@ -50,11 +50,9 @@ def calculate_total_row(
     for account in accounts:
         if not _include_in_total(account, show_group_accounts):
             continue
-        for field in VALUE_FIELDS:
-            total_row[field] += flt(account.get(field, 0))
+        _add_account_values(total_row, account, VALUE_FIELDS)
         account_currencies.update(account.get("_account_currencies", set()))
-        for field in ACCOUNT_CCY_VALUE_FIELDS:
-            account_currency_totals[field] += flt(account.get(field, 0))
+        _add_account_values(account_currency_totals, account, ACCOUNT_CCY_VALUE_FIELDS)
 
     if len(account_currencies) == 1:
         total_row["account_currency"] = next(iter(account_currencies))
@@ -133,12 +131,7 @@ def filter_out_zero_value_rows(
     for row in data:
         if not row.get("has_value"):
             continue
-        account = row.get("account")
-        while account not in accounts_to_show:
-            accounts_to_show.add(account)
-            account = parents.get(account)
-            if not account:
-                break
+        _include_account_ancestors(accounts_to_show, row.get("account"), parents)
 
     return [row for row in data if row.get("account") in accounts_to_show]
 
@@ -169,3 +162,22 @@ def _set_row_values(row: dict[str, Any], account: Any, company_currency: Any) ->
             has_value = True
 
     row["has_value"] = has_value
+
+
+def _add_account_values(
+    target: dict[str, Any], account: Any, fields: tuple[str, ...]
+) -> None:
+    for field in fields:
+        target[field] += flt(account.get(field, 0))
+
+
+def _include_account_ancestors(
+    accounts_to_show: set[str | None],
+    account: str | None,
+    parents: dict[str, str | None],
+) -> None:
+    while account not in accounts_to_show:
+        accounts_to_show.add(account)
+        account = parents.get(account) if account is not None else None
+        if not account:
+            break

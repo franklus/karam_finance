@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, cast
+from typing import TYPE_CHECKING, Any, cast
 
 import frappe
 from erpnext.accounts.utils import get_balance_on as _upstream_get_balance_on
@@ -16,6 +16,7 @@ from pypika.terms import Field, NullValue
 
 if TYPE_CHECKING:
     from collections.abc import Iterable
+    from datetime import date
 
 
 _ENTRY_FIELDS = (
@@ -44,26 +45,31 @@ _UPSTREAM_AMOUNT_HOOK = (
 )
 
 
-def _coerce_filters(filters):
-    return filters if hasattr(filters, "account") else frappe._dict(filters or {})
+def _coerce_filters(filters: dict[str, Any]) -> frappe._dict[str, Any]:
+    return (
+        cast(frappe._dict[str, Any], filters)
+        if hasattr(filters, "account")
+        else frappe._dict(filters or {})
+    )
 
 
-def _clearance_is_after(field, report_date):
+def _clearance_is_after(field: Any, report_date: str | date | None) -> Any:
     return field.isnull() | (field > report_date)
 
 
-def _clearance_is_on_or_before(field, report_date):
+def _clearance_is_on_or_before(field: Any, report_date: str | date | None) -> Any:
     return field.notnull() & (field <= report_date)
 
 
-def _entry_projection(*fields):
+def _entry_projection(*fields: Any) -> list[Any]:
     """Return the stable output projection shared by all source queries."""
     if len(fields) != len(_ENTRY_FIELDS):
-        raise ValueError("BRS source query must provide every output field")
+        message = "BRS source query must provide every output field"
+        raise ValueError(message)
     return [field.as_(name) for field, name in zip(fields, _ENTRY_FIELDS, strict=True)]
 
 
-def _journal_entry_party_first():
+def _journal_entry_party_first() -> Any:
     """Build a one-row-per-Journal-Entry party relation for the JE source."""
     party = frappe.qb.DocType("Journal Entry Account")
 
@@ -80,7 +86,7 @@ def _journal_entry_party_first():
     )
 
 
-def _journal_entry_query(filters, *, outstanding: bool):
+def _journal_entry_query(filters: frappe._dict[str, Any], *, outstanding: bool) -> Any:
     je = frappe.qb.DocType("Journal Entry")
     jea = frappe.qb.DocType("Journal Entry Account")
 
@@ -137,7 +143,7 @@ def _journal_entry_query(filters, *, outstanding: bool):
     )
 
 
-def _payment_entry_query(filters, *, outstanding: bool):
+def _payment_entry_query(filters: frappe._dict[str, Any], *, outstanding: bool) -> Any:
     pe = frappe.qb.DocType("Payment Entry")
 
     conditions = (
@@ -197,7 +203,9 @@ def _payment_entry_query(filters, *, outstanding: bool):
     )
 
 
-def _purchase_invoice_query(filters, *, outstanding: bool):
+def _purchase_invoice_query(
+    filters: frappe._dict[str, Any], *, outstanding: bool
+) -> Any:
     pi = frappe.qb.DocType("Purchase Invoice")
     account = frappe.qb.DocType("Account")
 
@@ -241,7 +249,7 @@ def _purchase_invoice_query(filters, *, outstanding: bool):
     return query.select((-pi.paid_amount).as_("movement")).where(conditions)
 
 
-def _pos_query(filters, *, outstanding: bool):
+def _pos_query(filters: frappe._dict[str, Any], *, outstanding: bool) -> Any:
     si = frappe.qb.DocType("Sales Invoice")
     sip = frappe.qb.DocType("Sales Invoice Payment")
     account = frappe.qb.DocType("Account")
@@ -293,7 +301,7 @@ def _pos_query(filters, *, outstanding: bool):
     return query.select(sip.amount.as_("movement")).where(conditions)
 
 
-def _union_all(queries: Iterable):
+def _union_all(queries: Iterable[Any]) -> Any:
     iterator = iter(queries)
     query = next(iterator)
     for other in iterator:
@@ -301,7 +309,9 @@ def _union_all(queries: Iterable):
     return query
 
 
-def get_entries_for_bank_reconciliation_statement(filters):
+def get_entries_for_bank_reconciliation_statement(
+    filters: dict[str, Any],
+) -> list[dict[str, Any]]:
     """Fetch built-in outstanding sources with source-local query plans."""
     filters = _coerce_filters(filters)
     queries = [
@@ -311,37 +321,37 @@ def get_entries_for_bank_reconciliation_statement(filters):
     ]
     if filters.get("include_pos_transactions"):
         queries.append(_pos_query(filters, outstanding=True))
-    entries = []
+    entries: list[dict[str, Any]] = []
     for query in queries:
         entries.extend(query.run(as_dict=True))
     return entries
 
 
-def get_journal_entries(filters):
+def get_journal_entries(filters: dict[str, Any]) -> list[dict[str, Any]]:
     """Compatibility accessor for Journal Entry outstanding rows."""
     filters = _coerce_filters(filters)
     return _journal_entry_query(filters, outstanding=True).run(as_dict=True)
 
 
-def get_payment_entries(filters):
+def get_payment_entries(filters: dict[str, Any]) -> list[dict[str, Any]]:
     """Compatibility accessor for Payment Entry outstanding rows."""
     filters = _coerce_filters(filters)
     return _payment_entry_query(filters, outstanding=True).run(as_dict=True)
 
 
-def get_purchase_invoices(filters):
+def get_purchase_invoices(filters: dict[str, Any]) -> list[dict[str, Any]]:
     """Compatibility accessor for paid Purchase Invoice outstanding rows."""
     filters = _coerce_filters(filters)
     return _purchase_invoice_query(filters, outstanding=True).run(as_dict=True)
 
 
-def get_pos_entries(filters):
+def get_pos_entries(filters: dict[str, Any]) -> list[dict[str, Any]]:
     """Compatibility accessor for POS parent Sales Invoice rows."""
     filters = _coerce_filters(filters)
     return _pos_query(filters, outstanding=True).run(as_dict=True)
 
 
-def _get_builtin_incorrect_clearance_query(filters):
+def _get_builtin_incorrect_clearance_query(filters: frappe._dict[str, Any]) -> Any:
     queries = [
         _journal_entry_query(filters, outstanding=False),
         _payment_entry_query(filters, outstanding=False),
@@ -352,7 +362,7 @@ def _get_builtin_incorrect_clearance_query(filters):
     return _union_all(queries)
 
 
-def get_amounts_not_reflected_in_system(filters):
+def get_amounts_not_reflected_in_system(filters: dict[str, Any]) -> float:
     """Return signed movements cleared after the report date.
 
     Receipts and invoice refunds are positive; payments and invoice payments
@@ -369,7 +379,9 @@ def get_amounts_not_reflected_in_system(filters):
     return flt(amount)
 
 
-def get_balance_on(account, report_date, company=None):
+def get_balance_on(
+    account: str, report_date: str | date | None, company: str | None = None
+) -> float | None:
     """Return a ledger-account balance with one bounded GL query.
 
     Bank reconciliation only accepts ledger accounts.  Keep ERPNext's

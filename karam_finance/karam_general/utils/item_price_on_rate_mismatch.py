@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any, TypedDict, cast
+from typing import TYPE_CHECKING, Any, NotRequired, TypedDict, Unpack, cast
 
 import frappe
 from frappe import _
@@ -27,6 +27,13 @@ class ItemPriceRecord(TypedDict):
     price_list_rate: float | int
     item_name: str | None
     packing_unit: float | int | None
+
+
+class ItemPriceParty(TypedDict):
+    """Optional party scope shared by lookups and duplicate messages."""
+
+    customer: NotRequired[str | None]
+    supplier: NotRequired[str | None]
 
 
 SUPPORTED_RATE_MISMATCH_DOCTYPES = [
@@ -156,7 +163,7 @@ def resolve_valid_from(
     return getdate(raw_value) if raw_value else None
 
 
-def find_item_price_with_same_valid_from(
+def find_item_price_with_same_valid_from(  # noqa: PLR0913 - preserve the keyword contract of the Frappe request adapter.
     *,
     item_code: str,
     price_list: str,
@@ -186,7 +193,7 @@ def find_item_price_with_same_valid_from(
     )
 
 
-def find_item_price_with_matching_rate(
+def find_item_price_with_matching_rate(  # noqa: PLR0913 - preserve the keyword contract of the Frappe request adapter.
     *,
     item_code: str,
     price_list: str,
@@ -284,11 +291,10 @@ def get_item_price_mismatch_context(  # noqa: PLR0913
 def _build_item_price_mismatch_context(
     *,
     existing_item_price: ItemPriceRecord | None,
-    settings: frappe._dict,
+    settings: frappe._dict[str, int],
     item_code: str,
     valid_from: date,
-    customer: str | None = None,
-    supplier: str | None = None,
+    **party: Unpack[ItemPriceParty],
 ) -> dict[str, Any]:
     """Build prompt context and apply configured duplicate blocking."""
     context: dict[str, Any] = {"enabled": True, "valid_from": valid_from.isoformat()}
@@ -298,8 +304,8 @@ def _build_item_price_mismatch_context(
                 item_code=item_code,
                 item_name=existing_item_price.get("item_name"),
                 valid_from=valid_from,
-                customer=customer,
-                supplier=supplier,
+                customer=party.get("customer"),
+                supplier=party.get("supplier"),
             )
         context["item_price_name"] = existing_item_price.get("name")
         context["item_price_rate"] = existing_item_price.get("price_list_rate")
@@ -469,7 +475,7 @@ def _validate_rate_mismatch_create_request(
         frappe.throw(_("Set the price list rate before creating a new Item Price."))
 
 
-def _get_enabled_rate_mismatch_settings(doctype: str) -> frappe._dict:
+def _get_enabled_rate_mismatch_settings(doctype: str) -> frappe._dict[str, int]:
     """Return enabled mismatch settings or throw for disabled doctypes."""
     settings = get_rate_mismatch_settings(doctype)
     if not settings.enabled:
@@ -503,7 +509,7 @@ def _get_effective_rate(request: RateMismatchCreateRequest) -> float:
 def _apply_existing_item_price_policy(
     *,
     existing_item_price: ItemPriceRecord,
-    settings: frappe._dict,
+    settings: frappe._dict[str, int],
     request: RateMismatchCreateRequest,
     valid_from: date,
     effective_rate: float,
@@ -586,7 +592,7 @@ def _create_new_item_price_for_rate_mismatch(
     }
 
 
-def get_rate_mismatch_settings(doctype: str) -> frappe._dict:
+def get_rate_mismatch_settings(doctype: str) -> frappe._dict[str, int]:
     """Return rate-mismatch behaviour settings for the given doctype."""
     stock_settings = frappe.get_single("Stock Settings")
     rows = getattr(stock_settings, SETTINGS_TABLE_FIELD, None) or []
@@ -603,7 +609,7 @@ def get_rate_mismatch_settings(doctype: str) -> frappe._dict:
     return frappe._dict({"enabled": 0, "update_item_price": 0, "throw_exception": 1})
 
 
-def is_rate_mismatch_enabled(doctype: str) -> bool:
+def is_rate_mismatch_enabled(doctype: str) -> bool:  # noqa: V103 - retained public settings lookup API.
     """Return whether the feature is enabled for the given doctype."""
     return bool(get_rate_mismatch_settings(doctype).enabled)
 
@@ -722,13 +728,7 @@ def _select_applicable_item_price(
 ) -> ItemPriceRecord | None:
     """Choose a deterministic generic or quantity-compatible packing price."""
     requested_quantity = flt(quantity)
-    ordered_candidates = sorted(
-        candidates,
-        key=lambda candidate: (
-            -cint(candidate.get("packing_unit") or 0),
-            str(candidate.get("name") or ""),
-        ),
-    )
+    ordered_candidates = sorted(candidates, key=_item_price_priority)
     for candidate in ordered_candidates:
         packing_unit = cint(candidate.get("packing_unit") or 0)
         if packing_unit <= 0:
@@ -872,3 +872,7 @@ def _serialise_doctype_rows(doc: Document) -> list[tuple[str, int, int, int]]:
         for row in rows
         if _get_row_value(row, "doctype_name")
     ]
+
+
+def _item_price_priority(candidate: ItemPriceRecord) -> tuple[int, str]:
+    return -cint(candidate.get("packing_unit") or 0), candidate.get("name") or ""

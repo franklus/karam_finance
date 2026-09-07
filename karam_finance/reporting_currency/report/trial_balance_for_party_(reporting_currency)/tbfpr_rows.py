@@ -7,7 +7,14 @@ from frappe.utils import flt
 
 from .tbfpr_constants import VALUE_FIELDS
 
-TOTAL_FIELDS = ("opening_debit", "opening_credit", "debit", "credit")
+TOTAL_FIELDS = (
+    "opening_debit",
+    "opening_credit",
+    "debit",
+    "credit",
+    "closing_debit",
+    "closing_credit",
+)
 
 
 def get_blank_row() -> Any:
@@ -26,13 +33,6 @@ def build_total_row(reporting_currency: Any, totals: Any) -> Any:
 
     for field in TOTAL_FIELDS:
         row[field] = flt(totals.get(field, 0))
-
-    closing_debit, closing_credit = toggle_debit_credit(
-        row["opening_debit"] + row["debit"],
-        row["opening_credit"] + row["credit"],
-    )
-    row["closing_debit"] = closing_debit
-    row["closing_credit"] = closing_credit
 
     return row
 

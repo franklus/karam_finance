@@ -197,43 +197,23 @@ def _consolidated_key(
     """Build a composite key for voucher-consolidated grouping."""
     if gle.get("manual_entry") or gle.get("reporting_doe"):
         return (gle.get("gl_entry"),)
-    if not normalise:
-        key_parts = [
-            gle.get("account_currency"),
-            gle.get("transaction_currency"),
-            gle.get("posting_date"),
-            gle.get("voucher_type"),
-            gle.get("voucher_no"),
-            gle.get("account"),
-            gle.get("party_type"),
-            gle.get("party"),
-        ]
-        if immutable_ledger:
-            key_parts.append(gle.get("creation"))
-        if include_dims:
-            key_parts.extend(gle.get(dim) for dim in accounting_dimensions)
-            key_parts.append(gle.get("cost_center"))
-            key_parts.append(gle.get("project"))
-        return tuple(key_parts)
-
-    key_parts = [
-        _normalise_key_part(gle.get("account_currency")),
-        _normalise_key_part(gle.get("transaction_currency")),
-        _normalise_key_part(gle.get("posting_date")),
-        _normalise_key_part(gle.get("voucher_type")),
-        _normalise_key_part(gle.get("voucher_no")),
-        _normalise_key_part(gle.get("account")),
-        _normalise_key_part(gle.get("party_type")),
-        _normalise_key_part(gle.get("party")),
+    fields = [
+        "account_currency",
+        "transaction_currency",
+        "posting_date",
+        "voucher_type",
+        "voucher_no",
+        "account",
+        "party_type",
+        "party",
     ]
     if immutable_ledger:
-        key_parts.append(_normalise_key_part(gle.get("creation")))
+        fields.append("creation")
     if include_dims:
-        key_parts.extend(
-            _normalise_key_part(gle.get(dim)) for dim in accounting_dimensions
-        )
-        key_parts.append(_normalise_key_part(gle.get("cost_center")))
-        key_parts.append(_normalise_key_part(gle.get("project")))
+        fields.extend([*accounting_dimensions, "cost_center", "project"])
+    key_parts = [gle.get(field) for field in fields]
+    if normalise:
+        return tuple(_normalise_key_part(value) for value in key_parts)
     return tuple(key_parts)
 
 
@@ -308,33 +288,16 @@ def _build_aggregation_state(
         collect_against: bool = False,
     ) -> None:
         target = data[key]
-        if not gle.get("manual_entry") and not gle.get("reporting_doe"):
-            target["_has_source_amounts"] = True
-        _track_account_currency(target, gle)
-        target["debit"] += gle["debit"]
-        target["credit"] += gle["credit"]
+        _add_currency_amounts(
+            target,
+            gle,
+            add_transaction_currency=(
+                state.add_transaction_currency
+                and key not in ("opening", "closing", "total")
+            ),
+        )
 
-        target["debit_in_account_currency"] += gle["debit_in_account_currency"]
-        target["credit_in_account_currency"] += gle["credit_in_account_currency"]
-        target["debit_in_company_currency"] += gle["debit_in_company_currency"]
-        target["credit_in_company_currency"] += gle["credit_in_company_currency"]
-
-        if state.add_transaction_currency and key not in (
-            "opening",
-            "closing",
-            "total",
-        ):
-            target["debit_in_transaction_currency"] += gle[
-                "debit_in_transaction_currency"
-            ]
-            target["credit_in_transaction_currency"] += gle[
-                "credit_in_transaction_currency"
-            ]
-
-        if show_net_values or (
-            state.show_net_party_values
-            and state.account_type_map.get(target.account) in ("Receivable", "Payable")
-        ):
+        if _should_net_values(target, state, show_net_values):
             _apply_net_values(target)
 
         if collect_against and gle.against_voucher:
@@ -342,6 +305,40 @@ def _build_aggregation_state(
 
     state.update_value_in_dict = update_value_in_dict
     return state
+
+
+def _add_currency_amounts(
+    target: frappe._dict[str, Any],
+    gle: frappe._dict[str, Any],
+    *,
+    add_transaction_currency: bool,
+) -> None:
+    if not gle.get("manual_entry") and not gle.get("reporting_doe"):
+        target["_has_source_amounts"] = True
+    _track_account_currency(target, gle)
+    for field in (
+        "debit",
+        "credit",
+        "debit_in_account_currency",
+        "credit_in_account_currency",
+        "debit_in_company_currency",
+        "credit_in_company_currency",
+    ):
+        target[field] += gle[field]
+    if add_transaction_currency:
+        target["debit_in_transaction_currency"] += gle["debit_in_transaction_currency"]
+        target["credit_in_transaction_currency"] += gle[
+            "credit_in_transaction_currency"
+        ]
+
+
+def _should_net_values(
+    target: frappe._dict[str, Any], state: SimpleNamespace, show_net_values: bool
+) -> bool:
+    return show_net_values or (
+        state.show_net_party_values
+        and state.account_type_map.get(target.account) in ("Receivable", "Payable")
+    )
 
 
 def _apply_net_values(target: frappe._dict[str, Any]) -> None:
@@ -472,17 +469,15 @@ def _aggregate_consolidated_rows(
         if gle["posting_date"] > to_date:
             continue
         _prepare_gle_for_output(gle, translation_cache)
-        is_opening = gle["posting_date"] < from_date or (
-            cstr(gle.is_opening) == "Yes"
-            and not show_opening_entries
-            and not disable_opening_balance
-        )
-        if is_opening:
+        if _is_opening_entry(
+            gle,
+            from_date,
+            show_opening_entries,
+            disable_opening_balance=disable_opening_balance,
+        ):
             update_value(totals, "opening", gle, show_net_values=True)
             update_value(totals, "closing", gle, show_net_values=True)
-        elif gle["posting_date"] <= to_date or (
-            cstr(gle.is_opening) == "Yes" and bool(show_opening_entries)
-        ):
+        elif _is_report_entry(gle, to_date, show_opening_entries):
             _process_consolidated_entry(gle, state)
 
         if state.include_dimensions:
@@ -726,17 +721,27 @@ def _append_group_rows(
         )
         if not acc_dict["entries"] and not opening_only:
             continue
-        data.append(_make_group_separator_row())
-        if show_balances:
-            data.append(acc_dict["totals"]["opening"])
-        if opening_only and not acc_dict["entries"]:
-            data.append(_make_account_header_row(account))
-        data.extend(acc_dict["entries"])
-        if acc_dict["entries"]:
-            data.append(acc_dict["totals"]["total"])
-        if show_balances:
-            _apply_net_values(acc_dict["totals"]["closing"])
-            data.append(acc_dict["totals"]["closing"])
+        _append_visible_group(data, account, acc_dict, show_balances=show_balances)
+
+
+def _append_visible_group(
+    data: list[dict[str, Any]],
+    account: str | None,
+    acc_dict: frappe._dict[str, Any],
+    *,
+    show_balances: bool,
+) -> None:
+    data.append(_make_group_separator_row())
+    if show_balances:
+        data.append(acc_dict["totals"]["opening"])
+    if not acc_dict["entries"]:
+        data.append(_make_account_header_row(account))
+    data.extend(acc_dict["entries"])
+    if acc_dict["entries"]:
+        data.append(acc_dict["totals"]["total"])
+    if show_balances:
+        _apply_net_values(acc_dict["totals"]["closing"])
+        data.append(acc_dict["totals"]["closing"])
 
 
 def _is_footer_row(row: dict[str, Any]) -> bool:

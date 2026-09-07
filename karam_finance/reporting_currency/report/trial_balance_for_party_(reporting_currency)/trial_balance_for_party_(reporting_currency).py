@@ -11,6 +11,8 @@ from __future__ import annotations
 
 from typing import Any
 
+from karam_finance.reporting_currency.report.reporting_source import prepare_filters
+
 from .tbfpr_columns import get_columns as _get_columns
 from .tbfpr_constants import VALUE_FIELDS as _VALUE_FIELDS
 from .tbfpr_data import get_data as _get_data
@@ -24,6 +26,7 @@ VALUE_FIELDS = _VALUE_FIELDS
 
 
 def execute(filters: Any = None) -> Any:
+    filters = prepare_filters(filters)
     validate_filters(filters)
     show_party_name = is_party_name_visible(filters)
     columns = get_columns(filters, show_party_name)

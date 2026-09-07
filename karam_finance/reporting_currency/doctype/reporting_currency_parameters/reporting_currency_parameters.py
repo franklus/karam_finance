@@ -6,5 +6,5 @@
 from frappe.model.document import Document
 
 
-class ReportingCurrencyParameters(Document):
+class ReportingCurrencyParameters(Document):  # noqa: V102 - Frappe child DocType controller loader.
     """Child table for per-year reporting currency parameters."""

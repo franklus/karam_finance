@@ -49,7 +49,9 @@
     const confirmedRate = flt(row.price_list_rate);
     const originalRate = previousPriceListRateByRow.get(row.name) ?? confirmedRate;
     const promptKey = getPromptKey(frm, row, priceList);
-    if (promptStateByRow.get(row.name) === promptKey) return;
+    if (promptStateByRow.get(row.name) === promptKey) {
+      return;
+    }
     promptStateByRow.set(row.name, promptKey);
     frappe.confirm(
       getPromptMessage(frm, row, priceList, context, confirmedRate),
@@ -99,15 +101,13 @@
   async function maybePromptForRateMismatch(frm, cdt, cdn) {
     const row = locals[cdt][cdn];
     if (!shouldPrompt(frm, row)) {
-      if (row?.name) clearPendingPromptState(row);
+      clearInvalidPrompt(row);
       return;
     }
     const promptKey = getPromptKey(frm, row, getSelectedPriceList(frm));
-    if (
-      promptStateByRow.get(row.name) === promptKey ||
-      pendingPromptStateByRow.get(row.name) === promptKey
-    )
+    if (hasPromptForRow(row.name, promptKey)) {
       return;
+    }
     pendingPromptStateByRow.set(row.name, promptKey);
     try {
       const context = await getItemPriceMismatchContext(
@@ -126,18 +126,23 @@
 
   function handlePriceListRateChange(browserEvent) {
     const { fieldObject, fieldname, cdn } = getEventDetails(browserEvent);
-    if (fieldname !== "price_list_rate") return;
-    const cdt = fieldObject?.doctype || (cdn ? getChildDoctype(cdn) : null);
-    const frm =
-      fieldObject?.frm || (cdt ? getFormForChildRow(locals[cdt]?.[cdn]) : null);
+    if (fieldname !== "price_list_rate") {
+      return;
+    }
+    const cdt = getEventChildDoctype(fieldObject, cdn);
+    const frm = getEventForm(fieldObject, cdt, cdn);
     clearPricingAdjustment(cdn);
     schedulePromptForRateMismatch(frm, cdt, cdn);
   }
 
   function handlePriceListRateModelChange(cdt, row) {
-    if (!row?.name) return;
+    if (!row?.name) {
+      return;
+    }
     const changed = consumePriceListRateChange(row);
-    if (userPricingFieldByRow.get(row.name) !== "price_list_rate") return;
+    if (userPricingFieldByRow.get(row.name) !== "price_list_rate") {
+      return;
+    }
     clearPricingAdjustment(row.name);
     schedulePromptForRateMismatch(getFormForChildRow(row), cdt, row.name, {
       priceListRateChanged: changed
@@ -148,17 +153,19 @@
     frappe.model.on(doctype, "price_list_rate", (_fieldname, _value, row) =>
       handlePriceListRateModelChange(doctype, row)
     );
-    PRICING_ADJUSTMENT_FIELDS.forEach((fieldname) =>
+    PRICING_ADJUSTMENT_FIELDS.forEach((fieldname) => {
       frappe.model.on(doctype, fieldname, (_fieldname, _value, row) =>
         markPricingAdjustment(row?.name)
-      )
-    );
+      );
+    });
     frappe.ui.form.on(doctype, {
       price_list_rate(frm, cdt, cdn) {
         const row = locals[cdt]?.[cdn];
         const changed = consumePriceListRateChange(row);
         rememberActiveForm(frm);
-        if (userPricingFieldByRow.get(cdn) !== "price_list_rate") return;
+        if (userPricingFieldByRow.get(cdn) !== "price_list_rate") {
+          return;
+        }
         clearPricingAdjustment(cdn);
         schedulePromptForRateMismatch(frm, cdt, cdn, { priceListRateChanged: changed });
       }
@@ -167,15 +174,35 @@
 
   function initItemPriceOnRateMismatch() {
     SUPPORTED_CHILD_DOCTYPES.forEach(registerChildHandlers);
-    SUPPORTED_PARENT_DOCTYPES.forEach((doctype) =>
+    SUPPORTED_PARENT_DOCTYPES.forEach((doctype) => {
       frappe.ui.form.on(doctype, {
         refresh: rememberActiveForm,
         onload_post_render: rememberActiveForm
-      })
-    );
+      });
+    });
     document.addEventListener("change", handlePriceListRateChange, true);
     document.addEventListener("input", rememberUserPricingField, true);
     document.addEventListener("change", rememberUserPricingField, true);
+  }
+
+  function clearInvalidPrompt(row) {
+    if (row?.name) {
+      clearPendingPromptState(row);
+    }
+  }
+
+  function hasPromptForRow(name, key) {
+    return (
+      promptStateByRow.get(name) === key || pendingPromptStateByRow.get(name) === key
+    );
+  }
+
+  function getEventChildDoctype(fieldObject, cdn) {
+    return fieldObject?.doctype || (cdn ? getChildDoctype(cdn) : null);
+  }
+
+  function getEventForm(fieldObject, cdt, cdn) {
+    return fieldObject?.frm || (cdt ? getFormForChildRow(locals[cdt]?.[cdn]) : null);
   }
 
   Object.assign(window.karamItemPriceMismatch, { maybePromptForRateMismatch });

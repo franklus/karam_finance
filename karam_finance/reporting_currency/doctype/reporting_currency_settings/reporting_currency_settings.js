@@ -3,9 +3,9 @@
 
 frappe.ui.form.on("Reporting Currency Settings", {
   refresh(frm) {
-    let syncButton;
-    const handler = () => queue_reporting_currency_sync(frm, syncButton);
-    syncButton = frm.add_custom_button(__("Sync from GL Entry"), handler);
+    const syncButton = frm.add_custom_button(__("Sync from GL Entry"), () =>
+      queue_reporting_currency_sync(frm, syncButton)
+    );
     syncButton.addClass("btn-primary");
   },
 
@@ -13,7 +13,7 @@ frappe.ui.form.on("Reporting Currency Settings", {
     if (!frm.doc.parent_account) {
       frappe.msgprint({
         message: __("Select a Parent Account before adding exclusions."),
-        indicator: "orange",
+        indicator: "orange"
       });
       return;
     }
@@ -41,12 +41,12 @@ frappe.ui.form.on("Reporting Currency Settings", {
         frm.refresh_field("account_exclusions");
         frappe.show_alert({
           indicator: "green",
-          message: __("Added {0} account(s) to the exclusion list.", [added]),
+          message: __("Added {0} account(s) to the exclusion list.", [added])
         });
       } else {
         frappe.show_alert({
           indicator: "blue",
-          message: __("All child accounts are already excluded."),
+          message: __("All child accounts are already excluded.")
         });
       }
     });
@@ -56,7 +56,7 @@ frappe.ui.form.on("Reporting Currency Settings", {
     if (!frm.doc.parent_account) {
       frappe.msgprint({
         message: __("Select a Parent Account before removing exclusions."),
-        indicator: "orange",
+        indicator: "orange"
       });
       return;
     }
@@ -74,16 +74,16 @@ frappe.ui.form.on("Reporting Currency Settings", {
         frm.refresh_field("account_exclusions");
         frappe.show_alert({
           indicator: "green",
-          message: __("Removed {0} account(s) from the exclusion list.", [removed]),
+          message: __("Removed {0} account(s) from the exclusion list.", [removed])
         });
       } else {
         frappe.show_alert({
           indicator: "blue",
-          message: __("No matching child accounts were found in the exclusion list."),
+          message: __("No matching child accounts were found in the exclusion list.")
         });
       }
     });
-  },
+  }
 });
 
 function fetch_accounts(frm, callback) {
@@ -91,7 +91,7 @@ function fetch_accounts(frm, callback) {
     method:
       "karam_finance.reporting_currency.doctype.reporting_currency_settings.reporting_currency_settings.get_accounts_under_parent",
     args: {
-      parent_account: frm.doc.parent_account,
+      parent_account: frm.doc.parent_account
     },
     freeze: true,
     freeze_message: __("Fetching child accounts..."),
@@ -100,7 +100,7 @@ function fetch_accounts(frm, callback) {
     },
     error: () => {
       callback([]);
-    },
+    }
   });
 }
 
@@ -117,90 +117,101 @@ function queue_reporting_currency_sync(frm, button) {
 
   frappe.call({
     method,
-    callback: (r) => {
-      const data = r.message || {};
-      const progressEvent = data.progress_event;
-      const doneEvent = data.done_event;
-      const title = __("Syncing Reporting Currency Data");
-
-      if (!progressEvent || !doneEvent) {
-        frappe.msgprint({
-          title: __("Unable to Start Sync"),
-          message: __("The server did not return progress information."),
-          indicator: "red",
-        });
-        reenable_button(button);
-        return;
-      }
-
-      frappe.show_progress(title, 0, 100, __("Job queued..."));
-
-      const progressHandler = (payload = {}) => {
-        const total = payload.total || 100;
-        const current = Math.min(payload.current || 0, total);
-        const message = payload.message || __("Processing...");
-        frappe.show_progress(title, current, total, message);
-      };
-
-      const doneHandler = (payload = {}) => {
-        frappe.realtime.off(progressEvent, progressHandler);
-        frappe.realtime.off(doneEvent, doneHandler);
-        frappe.hide_progress();
-
-        if (payload.status === "error") {
-          frappe.msgprint({
-            title: payload.title || __("Sync Failed"),
-            message: payload.message || __("Check the error log for details."),
-            indicator: "red",
-          });
-          reenable_button(button);
-          return;
-        }
-
-        const inserted = payload.inserted || 0;
-        const updated = payload.updated || 0;
-        const deleted = payload.deleted || 0;
-        const duration = payload.duration_seconds;
-        const parts = [
-          inserted ? __("inserted: {0}", [inserted]) : null,
-          updated ? __("updated: {0}", [updated]) : null,
-          deleted ? __("deleted: {0}", [deleted]) : null,
-        ].filter(Boolean);
-
-        const summary = parts.length ? parts.join(", ") : __("no changes");
-        const detail = duration
-          ? __("Reporting Currency sync completed ({0}) in {1}s.", [summary, duration])
-          : __("Reporting Currency sync completed ({0}).", [summary]);
-
-        if (payload.status === "partial_success") {
-          frappe.msgprint({
-            title: payload.title || __("Partial Success"),
-            message: payload.message || __("Check the error log for details."),
-            indicator: "orange",
-          });
-          frappe.show_alert({
-            indicator: "orange",
-            message: detail,
-          });
-        } else {
-          frappe.show_alert({
-            indicator: "green",
-            message: detail,
-          });
-        }
-        frm.reload_doc();
-        reenable_button(button);
-      };
-
-      frappe.realtime.on(progressEvent, progressHandler);
-      frappe.realtime.on(doneEvent, doneHandler);
-    },
+    callback: (r) => watch_reporting_currency_sync(frm, button, r.message || {}),
     error: () => {
       // frappe.throw() already displays the error message automatically
       // We just need to re-enable the button
       reenable_button(button);
-    },
+    }
   });
+}
+
+function watch_reporting_currency_sync(frm, button, data) {
+  const progressEvent = data.progress_event;
+  const doneEvent = data.done_event;
+  const title = __("Syncing Reporting Currency Data");
+
+  if (!progressEvent || !doneEvent) {
+    frappe.msgprint({
+      title: __("Unable to Start Sync"),
+      message: __("The server did not return progress information."),
+      indicator: "red"
+    });
+    reenable_button(button);
+    return;
+  }
+
+  frappe.show_progress(title, 0, 100, __("Job queued..."));
+
+  const progressHandler = (payload = {}) => {
+    const total = payload.total || 100;
+    const current = Math.min(payload.current || 0, total);
+    const message = payload.message || __("Processing...");
+    frappe.show_progress(title, current, total, message);
+  };
+
+  const doneHandler = (payload = {}) => {
+    frappe.realtime.off(progressEvent, progressHandler);
+    frappe.realtime.off(doneEvent, doneHandler);
+    frappe.hide_progress();
+
+    finish_reporting_currency_sync(frm, button, payload);
+  };
+
+  frappe.realtime.on(progressEvent, progressHandler);
+  frappe.realtime.on(doneEvent, doneHandler);
+}
+
+function finish_reporting_currency_sync(frm, button, payload) {
+  if (payload.status === "error") {
+    frappe.msgprint({
+      title: payload.title || __("Sync Failed"),
+      message: payload.message || __("Check the error log for details."),
+      indicator: "red"
+    });
+    reenable_button(button);
+    return;
+  }
+
+  const detail = sync_completion_detail(payload);
+  if (payload.status === "partial_success") {
+    frappe.msgprint({
+      title: payload.title || __("Partial Success"),
+      message: payload.message || __("Check the error log for details."),
+      indicator: "orange"
+    });
+    frappe.show_alert({
+      indicator: "orange",
+      message: detail
+    });
+  } else {
+    frappe.show_alert({
+      indicator: "green",
+      message: detail
+    });
+  }
+  frm.reload_doc();
+  reenable_button(button);
+}
+
+function sync_completion_detail(payload) {
+  const parts = sync_change_parts(payload);
+  const duration = payload.duration_seconds;
+  const summary = parts.length ? parts.join(", ") : __("no changes");
+  return duration
+    ? __("Reporting Currency sync completed ({0}) in {1}s.", [summary, duration])
+    : __("Reporting Currency sync completed ({0}).", [summary]);
+}
+
+function sync_change_parts(payload) {
+  const inserted = payload.inserted || 0;
+  const updated = payload.updated || 0;
+  const deleted = payload.deleted || 0;
+  return [
+    inserted ? __("inserted: {0}", [inserted]) : null,
+    updated ? __("updated: {0}", [updated]) : null,
+    deleted ? __("deleted: {0}", [deleted]) : null
+  ].filter(Boolean);
 }
 
 function reenable_button(button) {
@@ -213,14 +224,14 @@ function downloadCurrencyGLEntries(account_currency, reporting_currency) {
     "karam_finance.reporting_currency.doctype.reporting_currency_gle.sync.export_missing_currency_gl_entries_csv";
   const params = new URLSearchParams({
     account_currency,
-    reporting_currency,
+    reporting_currency
   });
   const url = `/api/method/${method}?${params.toString()}`;
 
   // Show a loading indicator
   frappe.show_alert({
     message: __("Preparing CSV download..."),
-    indicator: "blue",
+    indicator: "blue"
   });
 
   window.location.href = url;
@@ -239,14 +250,14 @@ function downloadTemporalValidationCSV(
   const params = new URLSearchParams({
     cache_key,
     default_currency,
-    reporting_currency,
+    reporting_currency
   });
   const url = `/api/method/${method}?${params.toString()}`;
 
   // Show a loading indicator
   frappe.show_alert({
     message: __("Preparing CSV download..."),
-    indicator: "blue",
+    indicator: "blue"
   });
 
   window.location.href = url;

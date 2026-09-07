@@ -6,10 +6,15 @@ and date range building for the sync process.
 
 from __future__ import annotations
 
-from typing import Any
+from typing import TYPE_CHECKING, Any, cast
 
 import frappe
 from frappe import _
+
+if TYPE_CHECKING:
+    from karam_finance.reporting_currency.doctype.reporting_currency_settings.reporting_currency_settings import (
+        ReportingCurrencySettings,
+    )
 
 # ============================================================================
 # MODULE CONSTANTS
@@ -54,7 +59,7 @@ def validate_settings() -> dict[str, Any]:
                 "Reporting Currency sync currently supports one company per site. Configure company-specific generation before synchronising multiple companies."
             )
         )
-    settings = frappe.get_single(DOCTYPE_RC_SETTINGS)
+    settings = cast("ReportingCurrencySettings", frappe.get_single(DOCTYPE_RC_SETTINGS))
 
     if not settings.reporting_currency:
         frappe.throw(
@@ -119,7 +124,6 @@ def validate_currency_exchange_coverage(
         return {"direct": False, "inverse": False}
 
     # Check for Currency Exchange records: default_currency ↔ reporting_currency
-    pair_key = f"{default_currency}-{reporting_currency}"
 
     # Check direct: default_currency → reporting_currency
     direct_exists = frappe.db.exists(
@@ -141,66 +145,12 @@ def validate_currency_exchange_coverage(
 
     # If neither direction exists, raise detailed error
     if not direct_exists and not inverse_exists:
-        # Collect sample GL entries for error message
-        sample_entries = []
-        for gle in gl_entries[
-            :SAMPLE_ENTRIES_LIMIT
-        ]:  # First N entries for error display
-            if gle.get("account_currency") != reporting_currency:
-                sample_entries.append(  # noqa: PERF401
-                    {
-                        "gle": gle.get("name"),
-                        "date": gle.get("posting_date"),
-                        "account": gle.get("account"),
-                        "voucher": gle.get("voucher_no"),
-                        "account_currency": gle.get("account_currency"),
-                    }
-                )
-
-        # Build error message
-        currencies_str = ", ".join(sorted(accounts_needing_conversion))
-        error_parts = [
-            f"<p><strong>Missing Currency Exchange: {pair_key}</strong></p>",
-            f"<p>Your company's default currency is "
-            f"<strong>{default_currency}</strong> and you're converting to "
-            f"<strong>{reporting_currency}</strong>.</p>",
-            f"<p>Affected accounts use currencies: "
-            f"<strong>{currencies_str}</strong></p>",
-            "<p><strong>Sample GL Entries:</strong></p>",
-            '<table class="table table-bordered table-sm" style="font-size: 90%;">',
-            "<thead><tr>",
-            "<th>GL Entry</th><th>Date</th><th>Account</th>",
-            "<th>Account Currency</th><th>Voucher</th>",
-            "</tr></thead><tbody>",
-        ]
-
-        for entry in sample_entries[:ERROR_TABLE_SAMPLE_LIMIT]:
-            error_parts.extend(
-                [
-                    "<tr>",
-                    f"<td>{entry['gle']}</td>",
-                    f"<td>{entry['date']}</td>",
-                    f"<td>{entry['account']}</td>",
-                    f"<td><strong>{entry['account_currency']}</strong></td>",
-                    f"<td>{entry['voucher']}</td>",
-                    "</tr>",
-                ]
-            )
-
-        error_parts.extend(
-            [
-                "</tbody></table>",
-                '<p style="margin-top: 15px;">',
-                "<strong>Action Required:</strong> Create Currency Exchange "
-                f"records for <strong>{default_currency} ↔ "
-                f"{reporting_currency}</strong> ",
-                f"(in either direction: {default_currency}→{reporting_currency} "
-                f"or {reporting_currency}→{default_currency}).",
-                "</p>",
-            ]
+        _throw_missing_exchange_error(
+            gl_entries,
+            accounts_needing_conversion,
+            default_currency,
+            reporting_currency=reporting_currency,
         )
-
-        frappe.throw("".join(error_parts), title=_("Missing Currency Exchange Records"))
 
     return {
         "direct": bool(direct_exists),
@@ -222,3 +172,65 @@ def get_reporting_company() -> str | None:
     if len(companies) > 1:
         frappe.throw(_("Reporting DOE currently supports one company per site."))
     return companies[0] if companies else None
+
+
+def _throw_missing_exchange_error(
+    gl_entries: list[dict[str, Any]],
+    accounts_needing_conversion: set[str],
+    default_currency: str,
+    *,
+    reporting_currency: str,
+) -> None:
+    pair_key = f"{default_currency}-{reporting_currency}"
+    # Collect sample GL entries for error message
+    sample_entries = []
+    for gle in gl_entries[:SAMPLE_ENTRIES_LIMIT]:  # First N entries for error display
+        if gle.get("account_currency") != reporting_currency:
+            sample_entries.append(  # noqa: PERF401
+                {
+                    "gle": gle.get("name"),
+                    "date": gle.get("posting_date"),
+                    "account": gle.get("account"),
+                    "voucher": gle.get("voucher_no"),
+                    "account_currency": gle.get("account_currency"),
+                }
+            )
+
+    # Build error message
+    currencies_str = ", ".join(sorted(accounts_needing_conversion))
+    error_parts = [
+        f"<p><strong>Missing Currency Exchange: {pair_key}</strong></p>",
+        f"<p>Your company's default currency is <strong>{default_currency}</strong> and you're converting to <strong>{reporting_currency}</strong>.</p>",
+        f"<p>Affected accounts use currencies: <strong>{currencies_str}</strong></p>",
+        "<p><strong>Sample GL Entries:</strong></p>",
+        '<table class="table table-bordered table-sm" style="font-size: 90%;">',
+        "<thead><tr>",
+        "<th>GL Entry</th><th>Date</th><th>Account</th>",
+        "<th>Account Currency</th><th>Voucher</th>",
+        "</tr></thead><tbody>",
+    ]
+
+    for entry in sample_entries[:ERROR_TABLE_SAMPLE_LIMIT]:
+        error_parts.extend(
+            [
+                "<tr>",
+                f"<td>{entry['gle']}</td>",
+                f"<td>{entry['date']}</td>",
+                f"<td>{entry['account']}</td>",
+                f"<td><strong>{entry['account_currency']}</strong></td>",
+                f"<td>{entry['voucher']}</td>",
+                "</tr>",
+            ]
+        )
+
+    error_parts.extend(
+        [
+            "</tbody></table>",
+            '<p style="margin-top: 15px;">',
+            f"<strong>Action Required:</strong> Create Currency Exchange records for <strong>{default_currency} ↔ {reporting_currency}</strong> ",
+            f"(in either direction: {default_currency}→{reporting_currency} or {reporting_currency}→{default_currency}).",
+            "</p>",
+        ]
+    )
+
+    frappe.throw("".join(error_parts), title=_("Missing Currency Exchange Records"))

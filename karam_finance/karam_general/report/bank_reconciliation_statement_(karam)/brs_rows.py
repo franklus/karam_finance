@@ -1,4 +1,9 @@
-def get_balance_row(label, amount, account_currency):
+from typing import Any
+
+
+def get_balance_row(
+    label: str, amount: float, account_currency: str | None
+) -> dict[str, Any]:
     if amount > 0:
         return {
             "payment_entry": label,

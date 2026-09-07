@@ -1,47 +1,60 @@
 // Shared currency formatter helpers for custom query reports.
 
-(function initCurrencyFormatter(root) {
+{
+  const root = typeof window !== "undefined" ? window : globalThis;
   const HELPER_VERSION = "2026.09.01";
   const NUMERIC_FIELD_TYPES = new Set(["Currency", "Float", "Int", "Percent"]);
   const loadedAt = new Date().toISOString();
   const fallbackWarningKeys = new Set();
 
   function extractText(html) {
-    if (!html) return "";
+    if (!html) {
+      return "";
+    }
     if (typeof document === "undefined") {
-      const raw = String(html);
-      let out = "";
-      let insideTag = false;
-      for (let i = 0; i < raw.length; i += 1) {
-        const ch = raw[i];
-        if (ch === "<") {
-          insideTag = true;
-        } else if (ch === ">") {
-          insideTag = false;
-        } else if (!insideTag) {
-          out += ch;
-        }
-      }
-      return out.trim();
+      return extractTextWithoutDOM(html);
     }
     const el = document.createElement("span");
     el.innerHTML = String(html);
     return (el.textContent || "").trim();
   }
 
+  function extractTextWithoutDOM(html) {
+    const raw = String(html);
+    let out = "";
+    let insideTag = false;
+    for (let i = 0; i < raw.length; i += 1) {
+      const ch = raw[i];
+      if (ch === "<") {
+        insideTag = true;
+      } else if (ch === ">") {
+        insideTag = false;
+      } else if (!insideTag) {
+        out += ch;
+      }
+    }
+    return out.trim();
+  }
+
   function splitSymbolAndNumber(text) {
     const idx = text.search(/[-\d(]/);
-    if (idx <= 0) return null;
+    if (idx <= 0) {
+      return null;
+    }
     const symbol = text.substring(0, idx).trim();
     const number = text.substring(idx);
-    if (!symbol || !number) return null;
+    if (!symbol || !number) {
+      return null;
+    }
     return { symbol, number };
   }
 
   function formatCurrencyHtml(formatted, extraStyle) {
     const text = extractText(formatted);
     const parts = splitSymbolAndNumber(text);
-    if (!parts) return formatted;
+    if (!parts) {
+      return formatted;
+    }
 
     const styleSuffix = extraStyle ? String(extraStyle) : "";
     // eslint-disable-next-line max-len
@@ -95,7 +108,9 @@
 
   function warnFallbackUsage(reportName, columnField = "") {
     const key = `${reportName || "unknown"}:${columnField || ""}`;
-    if (fallbackWarningKeys.has(key)) return;
+    if (fallbackWarningKeys.has(key)) {
+      return;
+    }
     fallbackWarningKeys.add(key);
     const effectiveReport = reportName || "Unknown Report";
     const fieldSuffix = columnField ? ` (${columnField})` : "";
@@ -153,4 +168,4 @@
   if (typeof module === "object" && module.exports) {
     module.exports = api;
   }
-})(typeof window !== "undefined" ? window : globalThis);
+}

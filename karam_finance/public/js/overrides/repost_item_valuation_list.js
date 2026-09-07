@@ -15,13 +15,13 @@ frappe.listview_settings["Repost Item Valuation"] = {
                 message: __(
                   "Queued repost entries are now being processed in the background."
                 ),
-                indicator: "green",
+                indicator: "green"
               });
               listview.refresh();
-            },
+            }
           });
         }
       );
     });
-  },
+  }
 };

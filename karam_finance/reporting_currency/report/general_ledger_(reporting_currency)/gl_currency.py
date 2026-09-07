@@ -154,6 +154,44 @@ def _set_account_currency_summary_values(
     row.pop("_mixed_account_currency", None)
 
 
+def _flat_contributing_currencies(
+    detail_rows: list[ReportRow], opening_balances: dict[AccountCurrencyKey, Any]
+) -> set[str]:
+    currencies = {
+        currency
+        for (_account, currency), balance in opening_balances.items()
+        if currency and flt(balance) != 0
+    }
+    currencies.update(
+        currency
+        for row in detail_rows
+        if (currency := _normalise_key_part(row.get("account_currency")))
+        if _has_account_movement(row)
+    )
+
+    return currencies
+
+
+def _has_account_movement(row: ReportRow) -> bool:
+    return (
+        flt(row.get("debit_in_account_currency")) != 0
+        or flt(row.get("credit_in_account_currency")) != 0
+    )
+
+
+def _has_unresolved_flat_currency(
+    detail_rows: list[ReportRow], opening_balances: dict[AccountCurrencyKey, Any]
+) -> bool:
+    return any(
+        not _normalise_key_part(currency) and flt(balance) != 0
+        for (_account, currency), balance in opening_balances.items()
+    ) or any(
+        not _normalise_key_part(row.get("account_currency"))
+        and _has_account_movement(row)
+        for row in detail_rows
+    )
+
+
 def _apply_flat_account_currency_summaries(
     data: list[ReportRow], opening_balances: dict[AccountCurrencyKey, Any]
 ) -> None:
@@ -165,31 +203,9 @@ def _apply_flat_account_currency_summaries(
         if row.get("row_type") in {"opening", "report_total", "closing"}
     }
 
-    currencies = {
-        currency
-        for (_account, currency), balance in opening_balances.items()
-        if currency and flt(balance) != 0
-    }
-    currencies.update(
-        currency
-        for row in detail_rows
-        if (currency := _normalise_key_part(row.get("account_currency")))
-        if (
-            flt(row.get("debit_in_account_currency")) != 0
-            or flt(row.get("credit_in_account_currency")) != 0
-        )
-    )
-
-    has_unresolved_currency = any(
-        not _normalise_key_part(currency) and flt(balance) != 0
-        for (_account, currency), balance in opening_balances.items()
-    ) or any(
-        not _normalise_key_part(row.get("account_currency"))
-        and (
-            flt(row.get("debit_in_account_currency")) != 0
-            or flt(row.get("credit_in_account_currency")) != 0
-        )
-        for row in detail_rows
+    currencies = _flat_contributing_currencies(detail_rows, opening_balances)
+    has_unresolved_currency = _has_unresolved_flat_currency(
+        detail_rows, opening_balances
     )
 
     if has_unresolved_currency or len(currencies) != 1:
@@ -197,7 +213,18 @@ def _apply_flat_account_currency_summaries(
             row["_mixed_account_currency"] = 1
         return
 
-    currency = next(iter(currencies))
+    _set_flat_summaries(
+        detail_rows, opening_balances, summary_rows, currency=next(iter(currencies))
+    )
+
+
+def _set_flat_summaries(
+    detail_rows: list[ReportRow],
+    opening_balances: dict[AccountCurrencyKey, Any],
+    summary_rows: dict[str, ReportRow],
+    *,
+    currency: str,
+) -> None:
     currency_openings = [
         balance
         for (_account, opening_currency), balance in opening_balances.items()
@@ -299,15 +326,13 @@ def apply_running_balances(
         decimal_amount(0),
     )
     flat_balances: dict[AccountCurrencyKey, Any] = {}
-    currencies = _contributing_currencies(data)
-    if not currencies and filters.get("account_currency"):
-        currencies.add(filters["account_currency"])
+    currencies = _report_currencies(data, filters)
     can_accumulate = (
         len(currencies) <= 1 or filters.get("categorize_by") in _ACCOUNT_GROUP_MODES
     )
     for row in data:
         row["company"] = filters.get("company")
-        if row.get("row_type") != "account_header" and not row.get("posting_date"):
+        if _resets_running_balance(row):
             balances = dict.fromkeys(balances, decimal_amount(0))
         if _is_visual_separator(row):
             _blank_separator_fields(row)
@@ -315,9 +340,7 @@ def apply_running_balances(
         mixed = _prepare_currency_row(row, currencies)
         _update_company_balances(row, balances)
         row["presentation_currency"] = filters.get("presentation_currency")
-        if filters.get("categorize_by") == "Flat Chronological" and row.get(
-            "posting_date"
-        ):
+        if _is_flat_detail(row, filters):
             row["balance_in_account_currency"] = _flat_account_balance(
                 row, flat_balances
             )
@@ -368,3 +391,20 @@ def _update_account_balance(
         row.get("debit_in_account_currency")
     ) - decimal_amount(row.get("credit_in_account_currency"))
     row["balance_in_account_currency"] = balances["balance_in_account_currency"]
+
+
+def _report_currencies(data: list[ReportRow], filters: ReportRow) -> set[str]:
+    currencies = _contributing_currencies(data)
+    if not currencies and filters.get("account_currency"):
+        currencies.add(filters["account_currency"])
+    return currencies
+
+
+def _is_flat_detail(row: ReportRow, filters: ReportRow) -> bool:
+    return filters.get("categorize_by") == "Flat Chronological" and bool(
+        row.get("posting_date")
+    )
+
+
+def _resets_running_balance(row: ReportRow) -> bool:
+    return row.get("row_type") != "account_header" and not row.get("posting_date")

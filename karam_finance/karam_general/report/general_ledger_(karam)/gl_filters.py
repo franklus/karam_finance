@@ -127,40 +127,43 @@ def validate_party(filters: Any) -> None:
 
 def set_account_currency(filters: Any) -> Any:
     """Determine and set account currency based on filters."""
-    if filters.get("account") or (filters.get("party") and len(filters.party) == 1):
-        filters["company_currency"] = frappe.get_cached_value(
-            "Company", filters.company, "default_currency"
+    if not (
+        filters.get("account") or (filters.get("party") and len(filters.party) == 1)
+    ):
+        return filters
+    filters["company_currency"] = frappe.get_cached_value(
+        "Company", filters.company, "default_currency"
+    )
+    account_currency = None
+
+    if filters.get("account"):
+        account_currency = _selected_accounts_currency(filters["account"])
+
+    elif filters.get("party") and filters.get("party_type"):
+        gle_currency = frappe.db.get_value(
+            "GL Entry",
+            {
+                "party_type": filters.party_type,
+                "party": filters.party[0],
+                "company": filters.company,
+            },
+            "account_currency",
         )
-        account_currency = None
 
-        if filters.get("account"):
-            account_currency = _selected_accounts_currency(filters["account"])
-
-        elif filters.get("party") and filters.get("party_type"):
-            gle_currency = frappe.db.get_value(
-                "GL Entry",
-                {
-                    "party_type": filters.party_type,
-                    "party": filters.party[0],
-                    "company": filters.company,
-                },
-                "account_currency",
+        account_currency = gle_currency or (
+            None
+            if filters.party_type in ("Employee", "Shareholder", "Member")
+            else frappe.get_cached_value(
+                filters.party_type, filters.party[0], "default_currency"
             )
+        )
 
-            account_currency = gle_currency or (
-                None
-                if filters.party_type in ("Employee", "Shareholder", "Member")
-                else frappe.get_cached_value(
-                    filters.party_type, filters.party[0], "default_currency"
-                )
-            )
-
-        filters["account_currency"] = account_currency or filters.company_currency
-        if (
-            filters.account_currency != filters.company_currency
-            and not filters.presentation_currency
-        ):
-            filters.presentation_currency = filters.account_currency
+    filters["account_currency"] = account_currency or filters.company_currency
+    if (
+        filters.account_currency != filters.company_currency
+        and not filters.presentation_currency
+    ):
+        filters.presentation_currency = filters.account_currency
 
     return filters
 
@@ -171,8 +174,7 @@ def get_accounts_with_children(accounts: list[str] | str) -> list[str] | None:
     Only expands accounts that are marked as is_group=1. Leaf accounts
     are returned without expansion to ensure precise filtering.
     """
-    if not isinstance(accounts, list):
-        accounts = [d.strip() for d in accounts.strip().split(",") if d]
+    accounts = _parse_account_names(accounts)
     if not accounts:
         return None
 
@@ -214,3 +216,9 @@ def _selected_accounts_currency(accounts: list[str]) -> str | None:
     if all(get_account_currency(account) == currency for account in accounts[1:]):
         return currency
     return None
+
+
+def _parse_account_names(accounts: list[str] | str) -> list[str]:
+    if isinstance(accounts, list):
+        return accounts
+    return [name.strip() for name in accounts.strip().split(",") if name]

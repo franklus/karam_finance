@@ -13,19 +13,23 @@ from __future__ import annotations
 
 import copy
 import cProfile
+import importlib
 import io
 import pstats
 import statistics
 import time
 import tracemalloc
-from collections.abc import Callable
+from collections.abc import Callable, Generator
 from contextlib import contextmanager
-from typing import Any
+from operator import itemgetter
+from types import ModuleType
+from typing import Any, cast
 
 import frappe
 
 
-def benchmark(
+# Retain the documented interactive benchmark calling convention.
+def benchmark(  # noqa: V103, PLR0917
     filters: dict[str, Any],
     repeats: int = 5,
     warmups: int = 1,
@@ -34,16 +38,16 @@ def benchmark(
 ) -> dict[str, Any]:
     """Compare identical read-only filters against both report pipelines."""
     if repeats < 1 or warmups < 0:
-        raise ValueError("repeats must be positive and warmups cannot be negative")
+        message = "repeats must be positive and warmups cannot be negative"
+        raise ValueError(message)
 
-    import importlib
-
-    import erpnext.accounts.report.general_ledger.general_ledger as upstream
+    # ERPNext report imports require an initialised Frappe site.
+    import erpnext.accounts.report.general_ledger.general_ledger as upstream  # noqa: PLC0415
 
     karam = importlib.import_module(
         "karam_finance.karam_general.report.general_ledger_(karam).general_ledger_(karam)"
     )
-    reports: dict[str, Callable] = {
+    reports: dict[str, Callable[..., Any]] = {
         "upstream_v16": upstream.execute,
         "karam": karam.execute,
     }
@@ -53,9 +57,8 @@ def benchmark(
             report,
             _filters_for_report(filters, name),
             repeats,
-            warmups,
-            include_query_timings,
-            include_stage_timings,
+            warmups=warmups,
+            timing_options=(include_query_timings, include_stage_timings),
         )
         for name, report in reports.items()
     }
@@ -67,12 +70,10 @@ def benchmark(
     }
 
 
-def profile(
+def profile(  # noqa: V103 - documented interactive developer-tool entry point.
     filters: dict[str, Any], report_name: str = "karam", limit: int = 30
 ) -> str:
     """Return a cProfile report for one read-only report execution."""
-    import importlib
-
     reports = {
         "upstream_v16": importlib.import_module(
             "erpnext.accounts.report.general_ledger.general_ledger"
@@ -84,7 +85,8 @@ def profile(
     try:
         report = reports[report_name]
     except KeyError as exc:
-        raise ValueError(f"Unknown report: {report_name}") from exc
+        message = f"Unknown report: {report_name}"
+        raise ValueError(message) from exc
 
     profiler = cProfile.Profile()
     profiler.enable()
@@ -99,12 +101,10 @@ def profile(
     return stream.getvalue()
 
 
-def compare_outputs(
+def compare_outputs(  # noqa: V103 - documented interactive developer-tool entry point.
     filters: dict[str, Any], *, joined_voucher_data: bool = False
 ) -> dict[str, Any]:
     """Compare logical upstream/Karam rows while ignoring approved extensions."""
-    import importlib
-
     upstream = importlib.import_module(
         "erpnext.accounts.report.general_ledger.general_ledger"
     )
@@ -146,7 +146,7 @@ def compare_outputs(
     }
 
 
-def _logical_rows(rows: list[dict]) -> list[tuple[tuple[str, str], ...]]:
+def _logical_rows(rows: list[dict[str, Any]]) -> list[tuple[tuple[str, str], ...]]:
     """Strip Karam-only presentation markers for an output comparison."""
     ignored_fields = {
         "account_currency",
@@ -179,7 +179,7 @@ def _logical_rows(rows: list[dict]) -> list[tuple[tuple[str, str], ...]]:
     return logical_rows
 
 
-def _normalise_against_voucher(value):
+def _normalise_against_voucher(value: Any) -> Any:
     """Ignore repeated tokens that Karam intentionally de-duplicates."""
     if not isinstance(value, str) or "," not in value:
         return value
@@ -197,15 +197,14 @@ def _filters_for_report(filters: dict[str, Any], name: str) -> dict[str, Any]:
 
 
 def _benchmark_report(
-    report: Callable,
+    report: Callable[..., Any],
     filters: dict[str, Any],
     repeats: int,
+    *,
     warmups: int,
-    include_query_timings: bool,
-    include_stage_timings: bool,
+    timing_options: tuple[bool, bool],
 ) -> dict[str, Any]:
-    import importlib
-
+    include_query_timings, include_stage_timings = timing_options
     module = importlib.import_module(report.__module__)
     stage_names = (
         "get_gl_entries",
@@ -235,65 +234,16 @@ def _benchmark_report(
     for _ in range(warmups):
         report(frappe._dict(copy.deepcopy(filters)))
 
-    samples: list[dict[str, Any]] = []
-    for _ in range(repeats):
-        sql_calls = 0
-        materialised_rows = 0
-        query_timings = []
-        original_sql = frappe.db.sql
-
-        def counting_sql(*args, sql=original_sql, timings=query_timings, **kwargs):
-            nonlocal sql_calls, materialised_rows
-            started = time.perf_counter()
-            result = sql(*args, **kwargs)
-            sql_calls += 1
-            if isinstance(result, list):
-                materialised_rows += len(result)
-            if include_query_timings:
-                timings.append(
-                    {
-                        "wall_time_ms": round(
-                            (time.perf_counter() - started) * 1000, 3
-                        ),
-                        "rows": len(result) if isinstance(result, list) else None,
-                        "sql": " ".join(str(args[0]).split())[:300],
-                    }
-                )
-            return result
-
-        frappe.db.sql = counting_sql
-        tracemalloc.start()
-        started = time.perf_counter()
-        with _stage_timer(module, stage_names, include_stage_timings) as stage_timings:
-            try:
-                _columns, rows = report(frappe._dict(copy.deepcopy(filters)))
-            finally:
-                elapsed_ms = (time.perf_counter() - started) * 1000
-                _current, peak_bytes = tracemalloc.get_traced_memory()
-                tracemalloc.stop()
-                frappe.db.sql = original_sql
-
-        samples.append(
-            {
-                "wall_time_ms": round(elapsed_ms, 3),
-                "query_count": sql_calls,
-                "materialised_db_rows": materialised_rows,
-                "output_rows": len(rows),
-                "peak_memory_bytes": peak_bytes,
-                **(
-                    {
-                        "slowest_queries": sorted(
-                            query_timings,
-                            key=lambda query: query["wall_time_ms"],
-                            reverse=True,
-                        )[:10]
-                    }
-                    if include_query_timings
-                    else {}
-                ),
-                **({"stage_timings": stage_timings} if include_stage_timings else {}),
-            }
+    samples = [
+        _sample_report(
+            report,
+            filters,
+            (module, stage_names),
+            include_query_timings=include_query_timings,
+            include_stage_timings=include_stage_timings,
         )
+        for _ in range(repeats)
+    ]
 
     return {
         "samples": samples,
@@ -317,48 +267,14 @@ def _benchmark_report(
 
 
 @contextmanager
-def _stage_timer(module, stage_names, enabled):
+def _stage_timer(
+    module: ModuleType, stage_names: tuple[str, ...], enabled: bool
+) -> Generator[list[dict[str, Any]]]:
     """Temporarily measure report stages without changing the report module."""
-    timings = []
-    originals = {}
+    timings: list[dict[str, Any]] = []
+    originals: dict[tuple[ModuleType, str], Callable[..., Any]] = {}
     if enabled:
-        for stage_name in stage_names:
-            stage = getattr(module, stage_name, None)
-            if not stage:
-                continue
-            targets = [module]
-            owner = __import__(stage.__module__, fromlist=[stage_name])
-            if owner is not module:
-                targets.append(owner)
-            for target in targets:
-                if not hasattr(target, stage_name):
-                    continue
-                key = (target, stage_name)
-                if key in originals:
-                    continue
-                original = getattr(target, stage_name)
-                originals[key] = original
-
-                def timed_stage(
-                    *args,
-                    _stage=original,
-                    _stage_name=stage_name,
-                    _timings=timings,
-                    **kwargs,
-                ):
-                    started = time.perf_counter()
-                    result = _stage(*args, **kwargs)
-                    _timings.append(
-                        {
-                            "stage": _stage_name,
-                            "wall_time_ms": round(
-                                (time.perf_counter() - started) * 1000, 3
-                            ),
-                        }
-                    )
-                    return result
-
-                setattr(target, stage_name, timed_stage)
+        _install_stage_timers(module, stage_names, timings=timings, originals=originals)
 
     try:
         yield timings
@@ -371,3 +287,127 @@ def _percentile(samples: list[dict[str, Any]], key: str, percentile: float) -> f
     values = sorted(float(sample[key]) for sample in samples)
     index = min(len(values) - 1, max(0, int((len(values) - 1) * percentile)))
     return values[index]
+
+
+def _timed_stage(
+    original: Callable[..., Any], stage_name: str, timings: list[dict[str, Any]]
+) -> Callable[..., Any]:
+    def timed_stage(
+        *args: Any,
+        _stage: Callable[..., Any] = original,
+        _stage_name=stage_name,
+        _timings=timings,
+        **kwargs: Any,
+    ) -> Any:
+        started = time.perf_counter()
+        result = _stage(*args, **kwargs)
+        _timings.append(
+            {
+                "stage": _stage_name,
+                "wall_time_ms": round((time.perf_counter() - started) * 1000, 3),
+            }
+        )
+        return result
+
+    return timed_stage
+
+
+def _sample_report(
+    report: Callable[..., Any],
+    filters: dict[str, Any],
+    timing_context: tuple[ModuleType, tuple[str, ...]],
+    *,
+    include_query_timings: bool,
+    include_stage_timings: bool,
+) -> dict[str, Any]:
+    module, stage_names = timing_context
+    sql_calls = 0
+    materialised_rows = 0
+    query_timings: list[dict[str, Any]] = []
+    original_sql = frappe.db.sql
+
+    def counting_sql(
+        *args: Any,
+        sql: Callable[..., Any] = original_sql,
+        timings: list[dict[str, Any]] = query_timings,
+        **kwargs: Any,
+    ) -> Any:
+        nonlocal sql_calls, materialised_rows
+        started = time.perf_counter()
+        result = sql(*args, **kwargs)
+        sql_calls += 1
+        if isinstance(result, list):
+            materialised_rows += len(result)
+        if include_query_timings:
+            timings.append(
+                {
+                    "wall_time_ms": round((time.perf_counter() - started) * 1000, 3),
+                    "rows": len(result) if isinstance(result, list) else None,
+                    "sql": " ".join(str(args[0]).split())[:300],
+                }
+            )
+        return result
+
+    frappe.db.sql = cast(Any, counting_sql)
+    tracemalloc.start()
+    started = time.perf_counter()
+    with _stage_timer(module, stage_names, include_stage_timings) as stage_timings:
+        try:
+            _columns, rows = report(frappe._dict(copy.deepcopy(filters)))
+        finally:
+            elapsed_ms = (time.perf_counter() - started) * 1000
+            _current, peak_bytes = tracemalloc.get_traced_memory()
+            tracemalloc.stop()
+            frappe.db.sql = original_sql
+
+    return {
+        "wall_time_ms": round(elapsed_ms, 3),
+        "query_count": sql_calls,
+        "materialised_db_rows": materialised_rows,
+        "output_rows": len(rows),
+        "peak_memory_bytes": peak_bytes,
+        **(
+            {
+                "slowest_queries": sorted(
+                    query_timings,
+                    key=itemgetter("wall_time_ms"),
+                    reverse=True,
+                )[:10]
+            }
+            if include_query_timings
+            else {}
+        ),
+        **({"stage_timings": stage_timings} if include_stage_timings else {}),
+    }
+
+
+def _install_stage_timers(
+    module: ModuleType,
+    stage_names: tuple[str, ...],
+    *,
+    timings: list[dict[str, Any]],
+    originals: dict[tuple[ModuleType, str], Callable[..., Any]],
+) -> None:
+    for stage_name in stage_names:
+        targets = _timer_targets(module, stage_name)
+        for target in targets:
+            key = (target, stage_name)
+            if not hasattr(target, stage_name) or key in originals:
+                continue
+            original = getattr(target, stage_name)
+            originals[key] = original
+
+            timed_stage = _timed_stage(original, stage_name, timings)
+
+            setattr(target, stage_name, timed_stage)
+
+
+def _timer_targets(module: ModuleType, stage_name: str) -> list[ModuleType]:
+    stage = getattr(module, stage_name, None)
+    if not stage:
+        return []
+    targets = [module]
+    owner = __import__(stage.__module__, fromlist=[stage_name])
+    if owner is not module:
+        targets.append(owner)
+    return targets

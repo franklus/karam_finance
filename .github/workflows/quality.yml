@@ -42,6 +42,20 @@ jobs:
           SKIP: pyrefly
         run: pre-commit run --all-files --show-diff-on-failure
 
+  javascript-tests:
+    name: JavaScript tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 24
+          cache: npm
+
+      - name: Install JavaScript tools
+        run: npm ci --ignore-scripts
+
       - name: Run JavaScript tests
         run: npm run test:js
 
@@ -72,7 +86,7 @@ jobs:
           --config semgrep.yml
           --config .frappe-semgrep-rules-extended/rules
           --config r/python.lang.correctness
-          karam_finance
+          karam_finance tools tests
 
   dependency-audit:
     name: Dependency audit

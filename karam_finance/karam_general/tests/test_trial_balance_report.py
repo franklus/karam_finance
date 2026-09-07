@@ -27,12 +27,12 @@ def _load_helper_module(name: str) -> ModuleType:
     return importlib.import_module(f"{REPORT_PACKAGE}.{name}")
 
 
-@pytest.fixture(autouse=True)
-def _frappe_local_context():
+@pytest.fixture(autouse=True)  # noqa: V103 - pytest autouse fixture.
+def _frappe_local_context() -> None:
     """Provide the minimal request state needed by Frappe validation helpers."""
     frappe.local.flags = _dict(mute_messages=True, print_messages=False)
-    frappe.local.message_log = []
-    frappe.local.lang = "en"
+    frappe.local.message_log = []  # noqa: V101 - Frappe request-local message state.
+    frappe.local.lang = "en"  # noqa: V101 - Frappe request-local translation state.
     return
 
 

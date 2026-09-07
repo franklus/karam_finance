@@ -51,7 +51,8 @@ def _run_handlers(handlers: list[str], doc: Document) -> None:
         elif handler == SOURCE_DOCUMENT_SERIES_HOOK:
             series_hooks.populate_karam_series_from_source_document(doc)
         else:
-            raise AssertionError(f"Unexpected test hook: {handler}")
+            message = f"Unexpected test hook: {handler}"
+            raise AssertionError(message)
 
 
 def _db_patch(
@@ -142,7 +143,7 @@ def test_applicability_rejects_a_series_not_enabled_for_the_doctype() -> None:
 
     with (
         _db_patch(return_value=0),
-        patch.object(series_hooks, "_", lambda message: message),
+        patch.object(series_hooks, "_", str),
         patch.object(series_hooks.frappe, "throw") as throw,
     ):
         series_hooks.validate_karam_series_applicability(doc)

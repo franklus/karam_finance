@@ -51,14 +51,11 @@
   const getFormKey = (doctype, docname) => `${doctype || ""}::${docname || ""}`;
 
   function rememberActiveForm(frm) {
-    if (!frm?.doctype || !SUPPORTED_PARENT_DOCTYPES.has(frm.doctype)) return;
-    activeFormsByDocument.set(
-      getFormKey(frm.doctype, frm.docname || frm.doc?.name),
-      frm
-    );
-    (frm.doc?.items || []).forEach(
-      (row) => row?.name && priceListRateByRow.set(row.name, flt(row.price_list_rate))
-    );
+    if (!frm?.doctype || !SUPPORTED_PARENT_DOCTYPES.has(frm.doctype)) {
+      return;
+    }
+    activeFormsByDocument.set(getFormKey(frm.doctype, getFormDocumentName(frm)), frm);
+    (frm.doc?.items || []).forEach(rememberRowRate);
   }
 
   const getChildDoctype = (cdn) =>
@@ -85,8 +82,12 @@
     cdn,
     { priceListRateChanged = false } = {}
   ) {
-    if (!frm || !cdt || !cdn || suppressedRows.has(cdn)) return;
-    if (pricingAdjustmentRows.has(cdn) && !priceListRateChanged) return;
+    if (isPromptSuppressed(frm, cdt, cdn)) {
+      return;
+    }
+    if (pricingAdjustmentRows.has(cdn) && !priceListRateChanged) {
+      return;
+    }
     window.setTimeout(
       () => window.karamItemPriceMismatch.maybePromptForRateMismatch(frm, cdt, cdn),
       0
@@ -100,9 +101,7 @@
 
   function getEventDetails(browserEvent) {
     const fieldObject = getFieldObject(browserEvent);
-    const fieldname =
-      fieldObject?.df?.fieldname ||
-      browserEvent.target?.closest?.("[data-fieldname]")?.dataset?.fieldname;
+    const fieldname = fieldObject?.df?.fieldname || getTargetFieldname(browserEvent);
     return {
       fieldObject,
       fieldname,
@@ -112,7 +111,9 @@
 
   function clearState(set, timers, cdn) {
     const timer = timers.get(cdn);
-    if (timer) window.clearTimeout(timer);
+    if (timer) {
+      window.clearTimeout(timer);
+    }
     timers.delete(cdn);
     set.delete(cdn);
   }
@@ -124,7 +125,9 @@
     clearState(userPricingFieldByRow, userPricingFieldTimersByRow, cdn);
 
   function markPricingAdjustment(cdn) {
-    if (!cdn) return;
+    if (!cdn) {
+      return;
+    }
     clearPricingAdjustment(cdn);
     pricingAdjustmentRows.add(cdn);
     pricingAdjustmentTimersByRow.set(
@@ -134,29 +137,58 @@
   }
 
   function consumePriceListRateChange(row) {
-    if (!row?.name) return false;
+    if (!row?.name) {
+      return false;
+    }
     const currentRate = flt(row.price_list_rate);
     const previousRate = priceListRateByRow.get(row.name);
     priceListRateByRow.set(row.name, currentRate);
     const changed = previousRate !== undefined && previousRate !== currentRate;
-    if (changed) previousPriceListRateByRow.set(row.name, previousRate);
+    if (changed) {
+      previousPriceListRateByRow.set(row.name, previousRate);
+    }
     return changed;
   }
 
   function rememberUserPricingField(browserEvent) {
     const { fieldname, cdn } = getEventDetails(browserEvent);
-    if (!USER_PRICING_FIELDS.has(fieldname) || !cdn) return;
+    if (!USER_PRICING_FIELDS.has(fieldname) || !cdn) {
+      return;
+    }
     clearUserPricingField(cdn);
     userPricingFieldByRow.set(cdn, fieldname);
     userPricingFieldTimersByRow.set(
       cdn,
       window.setTimeout(() => clearUserPricingField(cdn), 1000)
     );
-    if (fieldname === "price_list_rate") clearPricingAdjustment(cdn);
-    if (PRICING_ADJUSTMENT_FIELDS.includes(fieldname)) markPricingAdjustment(cdn);
+    if (fieldname === "price_list_rate") {
+      clearPricingAdjustment(cdn);
+    }
+    if (PRICING_ADJUSTMENT_FIELDS.includes(fieldname)) {
+      markPricingAdjustment(cdn);
+    }
   }
 
-  Object.assign((window.karamItemPriceMismatch ||= {}), {
+  function getFormDocumentName(frm) {
+    return frm.docname || frm.doc?.name;
+  }
+
+  function rememberRowRate(row) {
+    if (row?.name) {
+      priceListRateByRow.set(row.name, flt(row.price_list_rate));
+    }
+  }
+
+  function isPromptSuppressed(frm, cdt, cdn) {
+    return !frm || !cdt || !cdn || suppressedRows.has(cdn);
+  }
+
+  function getTargetFieldname(browserEvent) {
+    return browserEvent.target?.closest?.("[data-fieldname]")?.dataset?.fieldname;
+  }
+
+  window.karamItemPriceMismatch ||= {};
+  Object.assign(window.karamItemPriceMismatch, {
     PRICING_ADJUSTMENT_FIELDS,
     SUPPORTED_CHILD_DOCTYPES,
     SUPPORTED_PARENT_DOCTYPES,

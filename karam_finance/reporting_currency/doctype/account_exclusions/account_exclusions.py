@@ -6,5 +6,5 @@
 from frappe.model.document import Document
 
 
-class AccountExclusions(Document):
+class AccountExclusions(Document):  # noqa: V102 - Frappe child DocType controller loader.
     """Child table listing accounts excluded from reporting currency conversion."""

@@ -1,6 +1,10 @@
 const fs = require("node:fs");
 const path = require("node:path");
 const vm = require("node:vm");
+const {
+  messageDialog,
+  createHarnessState
+} = require("./item_price_on_rate_mismatch.behaviour.state.cjs");
 
 const SCRIPT_PATHS = [
   "item_price_on_rate_mismatch_state.js",
@@ -13,47 +17,60 @@ const SCRIPT_PATHS = [
 function createClosestTarget(fieldname, cdn) {
   return {
     closest(selector) {
-      if (selector === "[data-fieldname]") return { dataset: { fieldname } };
-      if (selector === ".grid-row[data-name]") return { dataset: { name: cdn } };
+      if (selector === "[data-fieldname]") {
+        return { dataset: { fieldname } };
+      }
+      if (selector === ".grid-row[data-name]") {
+        return { dataset: { name: cdn } };
+      }
       return null;
     }
   };
 }
 
-function messageDialog() {
-  return { custom_onhide: null, $wrapper: { is: () => true } };
+function createHarnessTimers(harnessOptions, state) {
+  const runtime = state;
+  return {
+    setTimeout(callback, delay) {
+      const id = runtime.nextTimerId;
+      runtime.nextTimerId += 1;
+      runtime.timers.push({
+        id,
+        callback() {
+          if (
+            harnessOptions.installMessageDialogOnTimer &&
+            !runtime.timerInstalledDialog
+          ) {
+            runtime.timerInstalledDialog = true;
+            runtime.msgDialog = messageDialog();
+          }
+          callback();
+        },
+        delay
+      });
+      return id;
+    },
+    clearTimeout(timerId) {
+      const timer = runtime.timers.find(({ id }) => id === timerId);
+      if (timer) {
+        timer.callback = null;
+      }
+    }
+  };
 }
 
-function createHarnessState(harnessOptions) {
+function createHarnessModel(state, localRows) {
+  const runtime = state;
+  const rows = localRows;
   return {
-    handlers: {},
-    listeners: {},
-    modelHandlers: {},
-    timers: [],
-    calls: [],
-    confirms: [],
-    alerts: [],
-    messages: [],
-    setValues: [],
-    nextTimerId: 1,
-    msgDialog: harnessOptions.withMessageDialog === false ? null : messageDialog(),
-    confirmReject: null,
-    timerInstalledDialog: false,
-    callImplementation: () =>
-      Promise.resolve({ message: { enabled: true, valid_from: "2026-04-30" } }),
-    cdn: "ROW-1",
-    childDoctype: "Purchase Order Item",
-    row: {
-      name: "ROW-1",
-      parent: "PUR-ORD-2026-00036",
-      parenttype: "Purchase Order",
-      item_code: "ITM02221",
-      rate: 7.1,
-      price_list_rate: 6.56,
-      stock_uom: "Bag (50Kg)",
-      conversion_factor: 1,
-      qty: 12,
-      batch_no: "BATCH-001"
+    on(doctype, fieldname, handler) {
+      runtime.modelHandlers[doctype] ||= {};
+      runtime.modelHandlers[doctype][fieldname] = handler;
+    },
+    set_value(doctype, docname, fieldname, value) {
+      runtime.setValues.push({ doctype, docname, fieldname, value });
+      rows[doctype][docname][fieldname] = value;
+      return Promise.resolve();
     }
   };
 }
@@ -61,39 +78,17 @@ function createHarnessState(harnessOptions) {
 function createHarnessContext(harnessOptions, state) {
   const runtime = state;
   const { cdn, childDoctype, row } = state;
+  const localRows = { [childDoctype]: { [cdn]: row } };
   const context = {
     Object,
     Promise,
     console,
-    locals: { [childDoctype]: { [cdn]: row } },
-    window: {
-      setTimeout(callback, delay) {
-        const id = runtime.nextTimerId;
-        runtime.nextTimerId += 1;
-        runtime.timers.push({
-          id,
-          callback() {
-            if (
-              harnessOptions.installMessageDialogOnTimer &&
-              !runtime.timerInstalledDialog
-            ) {
-              runtime.timerInstalledDialog = true;
-              runtime.msgDialog = messageDialog();
-            }
-            callback();
-          },
-          delay
-        });
-        return id;
-      },
-      clearTimeout(timerId) {
-        const timer = runtime.timers.find(({ id }) => id === timerId);
-        if (timer) timer.callback = null;
-      }
-    },
+    locals: localRows,
+    window: createHarnessTimers(harnessOptions, runtime),
     document: {
       addEventListener(name, callback) {
-        (runtime.listeners[name] ||= []).push(callback);
+        runtime.listeners[name] ||= [];
+        runtime.listeners[name].push(callback);
       }
     },
     frappe: {
@@ -105,16 +100,7 @@ function createHarnessContext(harnessOptions, state) {
         runtime.confirms.push(message);
         runtime.confirmReject = reject;
       },
-      model: {
-        on(doctype, fieldname, handler) {
-          (runtime.modelHandlers[doctype] ||= {})[fieldname] = handler;
-        },
-        set_value(doctype, docname, fieldname, value) {
-          runtime.setValues.push({ doctype, docname, fieldname, value });
-          context.locals[doctype][docname][fieldname] = value;
-          return Promise.resolve();
-        }
-      },
+      model: createHarnessModel(runtime, localRows),
       show_alert(alert) {
         runtime.alerts.push(alert);
       },
@@ -171,34 +157,15 @@ function createHarnessForm(harnessOptions, row) {
   };
 }
 
-function createHarness(harnessOptions = {}) {
-  const state = createHarnessState(harnessOptions);
-  const context = createHarnessContext(harnessOptions, state);
-  vm.createContext(context);
-  SCRIPT_PATHS.forEach((scriptPath) =>
-    vm.runInContext(fs.readFileSync(scriptPath, "utf8"), context)
-  );
-  const currentForm = createHarnessForm(harnessOptions, state.row);
-  state.handlers["Purchase Order"].refresh(currentForm);
-
-  function dispatch(name, fieldname) {
-    state.listeners[name]?.forEach((callback) =>
-      callback({ target: createClosestTarget(fieldname, state.cdn) })
-    );
-  }
-
-  function dispatchModelChange(fieldname) {
-    state.modelHandlers[state.childDoctype]?.[fieldname]?.(
-      fieldname,
-      state.row[fieldname],
-      state.row
-    );
-  }
-
+function createTimerFlusher(state) {
   function flushTimerBatch() {
-    if (!state.timers.length) return Promise.resolve();
+    if (!state.timers.length) {
+      return Promise.resolve();
+    }
     const batch = state.timers.splice(0);
-    batch.forEach(({ callback }) => callback?.());
+    batch.forEach(({ callback }) => {
+      callback?.();
+    });
     return Promise.resolve().then(flushTimerBatch);
   }
 
@@ -210,6 +177,35 @@ function createHarness(harnessOptions = {}) {
     await flushTimerBatch();
     await settleMicrotasks(12);
   }
+
+  return flushTimers;
+}
+
+function createHarness(harnessOptions = {}) {
+  const state = createHarnessState(harnessOptions);
+  const context = createHarnessContext(harnessOptions, state);
+  vm.createContext(context);
+  SCRIPT_PATHS.forEach((scriptPath) => {
+    vm.runInContext(fs.readFileSync(scriptPath, "utf8"), context);
+  });
+  const currentForm = createHarnessForm(harnessOptions, state.row);
+  state.handlers["Purchase Order"].refresh(currentForm);
+
+  function dispatch(name, fieldname) {
+    state.listeners[name]?.forEach((callback) => {
+      callback({ target: createClosestTarget(fieldname, state.cdn) });
+    });
+  }
+
+  function dispatchModelChange(fieldname) {
+    state.modelHandlers[state.childDoctype]?.[fieldname]?.(
+      fieldname,
+      state.row[fieldname],
+      state.row
+    );
+  }
+
+  const flushTimers = createTimerFlusher(state);
 
   return {
     alerts: state.alerts,

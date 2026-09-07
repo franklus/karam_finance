@@ -250,7 +250,7 @@ _populate_karam_series_from_exchange_rate_revaluation = (
 )
 
 
-def _set_karam_series_and_translation(
+def _set_karam_series_and_translation(  # noqa: V103 - retained Series compatibility wrapper.
     doc: Document,
     karam_series: str,
     _translation: str | None = None,

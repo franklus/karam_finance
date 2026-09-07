@@ -5,7 +5,7 @@ from __future__ import annotations
 import importlib
 import re
 import sqlite3
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 from unittest.mock import patch
 
 from frappe import _dict
@@ -39,7 +39,7 @@ def _load_data_module() -> ModuleType:
     return importlib.import_module(DATA_MODULE_NAME)
 
 
-def _filters(**overrides: object) -> _dict:
+def _filters(**overrides: object) -> _dict[str, Any]:
     values: dict[str, object] = {
         "company": "Karam",
         "party_type": "Customer",
@@ -369,12 +369,12 @@ class TestTrialBalanceForPartyReport(FrappeTestCase):
         """Future and cancelled entries stay excluded on both query paths."""
         module = _load_query_module()
         with sqlite3.connect(":memory:") as database:
-            database.row_factory = sqlite3.Row
+            database.row_factory = sqlite3.Row  # noqa: V101 - sqlite3 consumes this connection option.
             database.execute(
                 "CREATE TABLE `tabGL Entry` (party TEXT, party_type TEXT, "
                 "company TEXT, account_currency TEXT, posting_date TEXT, "
                 "is_opening TEXT, is_cancelled INTEGER, debit REAL, credit REAL, "
-                "debit_in_account_currency REAL, credit_in_account_currency REAL)"
+                "debit_in_account_currency REAL, credit_in_account_currency REAL, name TEXT)"
             )
             database.execute(
                 "CREATE TABLE `tabCustomer` (name TEXT, customer_name TEXT)"
@@ -393,7 +393,7 @@ class TestTrialBalanceForPartyReport(FrappeTestCase):
                 ("2026-06-01", "No", 1, 700),
             ]:
                 database.execute(
-                    "INSERT INTO `tabGL Entry` VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    "INSERT INTO `tabGL Entry` VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                     (
                         "CUST-001",
                         "Customer",
@@ -406,6 +406,7 @@ class TestTrialBalanceForPartyReport(FrappeTestCase):
                         0,
                         amount,
                         0,
+                        f"GLE-{posting_date}-{amount}",
                     ),
                 )
 
@@ -421,7 +422,16 @@ class TestTrialBalanceForPartyReport(FrappeTestCase):
                     _dict(dict(row)) for row in database.execute(query, values or {})
                 ]
 
-            with patch.object(module.frappe.db, "sql", side_effect=execute_sql):
+            def unrestricted_names(doctype: str, **_kwargs: object) -> object:
+                table = module.frappe.qb.DocType(doctype)
+                return module.frappe.qb.from_(table).select(table.name)
+
+            with (
+                patch.object(module.frappe.db, "sql", side_effect=execute_sql),
+                patch.object(
+                    module.frappe.qb, "get_query", side_effect=unrestricted_names
+                ),
+            ):
                 for include_all in (False, True):
                     rows = module._run_party_currency_query(
                         _filters(),

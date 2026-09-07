@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import frappe
 
+from karam_finance.common.db_schema import ensure_currency_columns_capacity
+
 _logger = frappe.logger("karam_finance.migrate", allow_site=True)
 
 
@@ -18,17 +20,18 @@ def after_migrate() -> None:
     """
     _logger.info("after_migrate: start")
 
-    from karam_finance.karam_general.utils.custom_fields import (
+    # Load controllers and fixtures only once the migration site is initialised.
+    from karam_finance.karam_general.utils.custom_fields import (  # noqa: PLC0415
         ensure_custom_fields_general,
     )
-    from karam_finance.karam_series.doctype.karam_series_settings.karam_series_settings import (
+    from karam_finance.karam_series.doctype.karam_series_settings.karam_series_settings import (  # noqa: PLC0415
         sync_doctype_list,
     )
-    from karam_finance.karam_series.utils.custom_fields import (
+    from karam_finance.karam_series.utils.custom_fields import (  # noqa: PLC0415
         ensure_custom_fields,
         project_requirement_policy,
     )
-    from karam_finance.letter_reconciliation.utils.custom_fields import (
+    from karam_finance.letter_reconciliation.utils.custom_fields import (  # noqa: PLC0415
         ensure_custom_fields_letter,
     )
 
@@ -52,7 +55,8 @@ def after_migrate() -> None:
 
 
 def after_install() -> None:
-    """Apply the same idempotent owned schema during app installation."""
+    """Apply owned schema and numeric capacity after installation creates tables."""
     _logger.info("after_install: start")
     after_migrate()
+    ensure_currency_columns_capacity()
     _logger.info("after_install: done")

@@ -24,7 +24,7 @@ test("repost list adds bulk action that triggers queued repost execution", () =>
     },
     show_alert(args) {
       alertArgs = args;
-    },
+    }
   };
 
   require("../../karam_finance/public/js/overrides/repost_item_valuation_list.js");
@@ -37,11 +37,11 @@ test("repost list adds bulk action that triggers queued repost execution", () =>
     page: {
       add_inner_button(label, handler) {
         addedButtons.push({ label, handler });
-      },
+      }
     },
     refresh() {
       refreshed = true;
-    },
+    }
   });
 
   assert.equal(addedButtons.length, 1);

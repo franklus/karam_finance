@@ -64,6 +64,29 @@ def render(
         )
 
 
+class _OpeningQuery:
+    def __init__(self, result: list[Any]) -> None:
+        self.result = result
+
+    def left_join(self, *_args: Any) -> _OpeningQuery:
+        return self
+
+    def on(self, *_args: Any) -> _OpeningQuery:
+        return self
+
+    def select(self, *_args: Any) -> _OpeningQuery:
+        return self
+
+    def where(self, *_args: Any) -> _OpeningQuery:
+        return self
+
+    def groupby(self, *_args: Any) -> _OpeningQuery:
+        return self
+
+    def run(self, **_kwargs: Any) -> list[Any]:
+        return self.result
+
+
 class TestReportingGLCorrectness(TestCase):
     def test_manual_entries_keep_their_identity(self) -> None:
         rows = render(
@@ -228,6 +251,51 @@ class TestReportingGLCorrectness(TestCase):
         )
         self.assertIn('"name"=', str(conditions[0]))
 
+    def test_flat_openings_accumulate_synced_and_reporting_only_groups(self) -> None:
+        filters = frappe._dict(
+            categorize_by="Flat Chronological",
+            company="Company",
+            from_date="2026-01-01",
+            to_date="2026-12-31",
+        )
+        groups = [
+            frappe._dict(
+                account="A",
+                account_currency="USD",
+                manual_entry=0,
+                reporting_doe=0,
+                opening_balance="100.0000",
+            ),
+            frappe._dict(
+                account="A",
+                account_currency="USD",
+                manual_entry=1,
+                reporting_doe=0,
+                opening_balance="0.0000",
+            ),
+            frappe._dict(
+                account="A",
+                account_currency="USD",
+                manual_entry=0,
+                reporting_doe=1,
+                opening_balance="0.0000",
+            ),
+        ]
+
+        for ordered_groups in (groups, list(reversed(groups))):
+            with (
+                patch.object(
+                    query.frappe.qb,
+                    "from_",
+                    return_value=_OpeningQuery(ordered_groups),
+                ),
+                patch.object(query, "_build_qb_conditions", return_value=[]),
+                patch.object(query, "build_match_conditions", return_value=None),
+            ):
+                openings = query.get_flat_account_currency_openings(filters)
+
+            self.assertEqual(openings, {("A", "USD"): Decimal("100.0000")})
+
     def test_decimal_adapter_preserves_exact_strings(self) -> None:
         money = importlib.import_module(ROOT + "gl_money")
         self.assertEqual(
@@ -280,17 +348,38 @@ class TestReportingMaintenancePermissions(TestCase):
                     function(**kwargs)
                 permission.assert_called_once_with("System Manager")
 
-    def test_manual_currency_is_defaulted_but_never_relabelled_silently(self) -> None:
+    def test_currency_is_defaulted_for_manual_and_linked_entries(self) -> None:
+        module = importlib.import_module(
+            "karam_finance.reporting_currency.doctype.reporting_currency_gle.reporting_currency_gle"
+        )
+        for manual_entry in (0, 1):
+            record: Any = frappe._dict(
+                manual_entry=manual_entry,
+                reporting_doe=0,
+                reporting_currency=None,
+                is_new=lambda: False,
+            )
+            with (
+                self.subTest(manual_entry=manual_entry),
+                patch.object(frappe.db, "get_single_value", return_value="USD"),
+            ):
+                module.ReportingCurrencyGLE.validate(record)
+                self.assertEqual(record.reporting_currency, "USD")
+                record.reporting_currency = "AED"
+                with self.assertRaises(frappe.ValidationError):
+                    module.ReportingCurrencyGLE.validate(record)
+                self.assertEqual(record.reporting_currency, "AED")
+
+    def test_new_manual_entry_overrides_company_currency_default(self) -> None:
         module = importlib.import_module(
             "karam_finance.reporting_currency.doctype.reporting_currency_gle.reporting_currency_gle"
         )
         record: Any = frappe._dict(
-            manual_entry=1, reporting_doe=0, reporting_currency=None
+            is_new=lambda: True,
+            gl_entry=None,
+            reporting_doe=0,
+            reporting_currency="LBP",
         )
         with patch.object(frappe.db, "get_single_value", return_value="USD"):
             module.ReportingCurrencyGLE.validate(record)
-            self.assertEqual(record.reporting_currency, "USD")
-            record.reporting_currency = "AED"
-            with self.assertRaises(frappe.ValidationError):
-                module.ReportingCurrencyGLE.validate(record)
-            self.assertEqual(record.reporting_currency, "AED")
+        self.assertEqual(record.reporting_currency, "USD")

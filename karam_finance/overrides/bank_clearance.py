@@ -2,24 +2,28 @@
 
 from __future__ import annotations
 
+from typing import Any, override
+
 import frappe
 from erpnext.accounts.doctype.bank_clearance.bank_clearance import BankClearance
 
 from karam_finance.common.party_utils import populate_party_names
 
 
-class KaramBankClearance(BankClearance):
+class KaramBankClearance(BankClearance):  # noqa: V102 - hooks.override_doctype_class loader.
     """Bank Clearance with party_type, party, and party_name enrichment."""
 
+    @override
     @frappe.whitelist()  # nosemgrep: frappe-missing-permission-check
-    def get_payment_entries(self) -> None:
+    # Pyrefly loses override metadata through Frappe's untyped decorator in the full graph.
+    def get_payment_entries(self) -> None:  # pyrefly: ignore[missing-override-decorator]
         """Extend parent to populate party fields after fetching entries."""
         super().get_payment_entries()
         self._enrich_with_party_info()
 
     def _enrich_with_party_info(self) -> None:
         """Batch-populate party_type, party, and party_name on child rows."""
-        rows_by_type: dict[str, list] = {}
+        rows_by_type: dict[str | None, list[Any]] = {}
         for row in self.payment_entries:
             rows_by_type.setdefault(row.payment_document, []).append(row)
 
@@ -43,7 +47,7 @@ class KaramBankClearance(BankClearance):
 
         self._populate_party_names()
 
-    def _enrich_journal_entries(self, rows: list) -> None:
+    def _enrich_journal_entries(self, rows: list[Any]) -> None:
         je_names = [r.payment_entry for r in rows]
         # Party lives on the contra line (receivable/payable), NOT the
         # bank-account line, so we omit the account filter here.
@@ -57,7 +61,7 @@ class KaramBankClearance(BankClearance):
             {"names": je_names},
             as_dict=1,
         )
-        party_map: dict[str, frappe._dict] = {}
+        party_map: dict[str, frappe._dict[str, Any]] = {}
         for d in party_data:
             party_map.setdefault(d.parent, d)
 
@@ -67,7 +71,7 @@ class KaramBankClearance(BankClearance):
                 row.party_type = info.party_type
                 row.party = info.party
 
-    def _enrich_payment_entries(self, rows: list) -> None:
+    def _enrich_payment_entries(self, rows: list[Any]) -> None:
         pe_names = [r.payment_entry for r in rows]
         party_data = frappe.db.sql(
             """

@@ -121,43 +121,12 @@ def apply_account_currency_data_to_accounts(
     """Compatibility helper retained for older direct callers."""
 
     for account in accounts:
-        opening_data = opening_balances_in_account_currency.get(account.name, {})
-        account_currencies = set(opening_data.get("account_currencies", set()))
-        period_debit = 0
-        period_credit = 0
-        for entry in gl_entries_by_account.get(account.name, []):
-            if not ignore_is_opening and entry.get("is_opening") == "Yes":
-                continue
-            currency = entry.get("account_currency")
-            if currency:
-                account_currencies.add(currency)
-            period_debit += decimal_amount(entry.get("debit_in_account_currency"))
-            period_credit += decimal_amount(entry.get("credit_in_account_currency"))
-
-        account.update(
-            {
-                "opening_debit_in_account_currency": decimal_amount(
-                    opening_data.get("opening_debit_in_account_currency", 0)
-                ),
-                "opening_credit_in_account_currency": decimal_amount(
-                    opening_data.get("opening_credit_in_account_currency", 0)
-                ),
-                "debit_in_account_currency": period_debit,
-                "credit_in_account_currency": period_credit,
-            }
+        _apply_account_currency_data(
+            account,
+            gl_entries_by_account,
+            opening_balances_in_account_currency,
+            ignore_is_opening=ignore_is_opening,
         )
-        account["closing_debit_in_account_currency"] = (
-            account["opening_debit_in_account_currency"]
-            + account["debit_in_account_currency"]
-        )
-        account["closing_credit_in_account_currency"] = (
-            account["opening_credit_in_account_currency"]
-            + account["credit_in_account_currency"]
-        )
-        account[_ACCOUNT_CURRENCIES] = account_currencies
-        account[_RAW_ACCOUNT_CURRENCY_VALUES] = {
-            field: account.get(field, 0) for field in ACCOUNT_CCY_VALUE_FIELDS
-        }
 
     finalize_account_currency_values(accounts, show_net_values)
 
@@ -250,3 +219,49 @@ def prepare_account_currency_opening_closing(row: Any) -> Any:
             row[valid_col] = 0
         else:
             row[reverse_col] = 0
+
+
+def _apply_account_currency_data(
+    account: Any,
+    gl_entries_by_account: Any,
+    opening_balances_in_account_currency: Any,
+    *,
+    ignore_is_opening: Any,
+) -> None:
+    opening_data = opening_balances_in_account_currency.get(account.name, {})
+    account_currencies = set(opening_data.get("account_currencies", set()))
+    period_debit = 0
+    period_credit = 0
+    for entry in gl_entries_by_account.get(account.name, []):
+        if not ignore_is_opening and entry.get("is_opening") == "Yes":
+            continue
+        currency = entry.get("account_currency")
+        if currency:
+            account_currencies.add(currency)
+        period_debit += decimal_amount(entry.get("debit_in_account_currency"))
+        period_credit += decimal_amount(entry.get("credit_in_account_currency"))
+
+    account.update(
+        {
+            "opening_debit_in_account_currency": decimal_amount(
+                opening_data.get("opening_debit_in_account_currency", 0)
+            ),
+            "opening_credit_in_account_currency": decimal_amount(
+                opening_data.get("opening_credit_in_account_currency", 0)
+            ),
+            "debit_in_account_currency": period_debit,
+            "credit_in_account_currency": period_credit,
+        }
+    )
+    account["closing_debit_in_account_currency"] = (
+        account["opening_debit_in_account_currency"]
+        + account["debit_in_account_currency"]
+    )
+    account["closing_credit_in_account_currency"] = (
+        account["opening_credit_in_account_currency"]
+        + account["credit_in_account_currency"]
+    )
+    account[_ACCOUNT_CURRENCIES] = account_currencies
+    account[_RAW_ACCOUNT_CURRENCY_VALUES] = {
+        field: account.get(field, 0) for field in ACCOUNT_CCY_VALUE_FIELDS
+    }

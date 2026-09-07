@@ -2,6 +2,17 @@
 // For license information, please see license.txt
 
 frappe.ui.form.on("Reporting Currency GLE", {
+  async onload(frm) {
+    if (frm.is_new() && !frm.doc.gl_entry && !frm.doc.reporting_doe) {
+      const currency = await frappe.db.get_single_value(
+        "Reporting Currency Settings",
+        "reporting_currency"
+      );
+      if (frm.is_new() && !frm.doc.gl_entry && !frm.doc.reporting_doe) {
+        await frm.set_value("reporting_currency", currency);
+      }
+    }
+  },
   refresh(frm) {
     // Make DOE records read-only
     if (frm.doc.reporting_doe === 1) {
@@ -20,5 +31,5 @@ frappe.ui.form.on("Reporting Currency GLE", {
         "blue"
       );
     }
-  },
+  }
 });

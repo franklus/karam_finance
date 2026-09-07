@@ -10,9 +10,15 @@
   const SERIAL_NUMBER_FIELD = "_karamSerialNumber";
 
   function asText(value) {
-    if (value === null || value === undefined) return "";
-    if (Array.isArray(value)) return value.join(", ");
-    if (typeof value === "object") return asText(value.name ?? value.value ?? "");
+    if (value === null || value === undefined) {
+      return "";
+    }
+    if (Array.isArray(value)) {
+      return value.join(", ");
+    }
+    if (typeof value === "object") {
+      return asText(value.name ?? value.value ?? "");
+    }
     return String(value);
   }
 
@@ -40,11 +46,7 @@
       footerRows.unshift(allRows[footerIndex]);
       footerIndex -= 1;
     }
-    if (
-      footerRows.length &&
-      (allRows[footerIndex]?.is_separator ||
-        allRows[footerIndex]?.row_type === "separator")
-    ) {
+    if (footerRows.length && isSeparatorRow(allRows[footerIndex])) {
       footerRows.unshift(allRows[footerIndex]);
       footerIndex -= 1;
     }
@@ -53,6 +55,10 @@
       bodyRows: allRows.slice(0, footerIndex + 1),
       footerRows
     };
+  }
+
+  function isSeparatorRow(row) {
+    return row?.is_separator || row?.row_type === "separator";
   }
 
   function clampPage(page, totalItems, pageSize) {
@@ -64,7 +70,7 @@
   }
 
   function createPaginationState(pageSize = DEFAULT_PAGE_SIZE) {
-    const state = {
+    return {
       page: 1,
       pageSize: PAGE_SIZES.includes(pageSize) ? pageSize : DEFAULT_PAGE_SIZE,
       totalItems: 0,
@@ -89,15 +95,21 @@
         return this.setTotal(totalItems);
       },
       getTotalPages() {
-        if (this.pageSize === SHOW_ALL_PAGE_SIZE) return 1;
+        if (this.pageSize === SHOW_ALL_PAGE_SIZE) {
+          return 1;
+        }
         return Math.max(1, Math.ceil(this.totalItems / this.pageSize));
       },
       getOffset() {
-        if (this.pageSize === SHOW_ALL_PAGE_SIZE) return 0;
+        if (this.pageSize === SHOW_ALL_PAGE_SIZE) {
+          return 0;
+        }
         return (this.page - 1) * this.pageSize;
       },
       getRange() {
-        if (!this.totalItems) return { start: 0, end: 0, total: 0 };
+        if (!this.totalItems) {
+          return { start: 0, end: 0, total: 0 };
+        }
         if (this.pageSize === SHOW_ALL_PAGE_SIZE) {
           return { start: 1, end: this.totalItems, total: this.totalItems };
         }
@@ -109,13 +121,13 @@
         };
       },
       getRows(rows) {
-        if (this.pageSize === SHOW_ALL_PAGE_SIZE) return (rows || []).slice();
+        if (this.pageSize === SHOW_ALL_PAGE_SIZE) {
+          return (rows || []).slice();
+        }
         const start = this.getOffset();
         return (rows || []).slice(start, start + this.pageSize);
       }
     };
-
-    return state;
   }
 
   function isLeadingTotalColumn(column, data) {
@@ -148,7 +160,9 @@
   }
 
   function formatRange(range) {
-    if (!range.total) return "0 of 0";
+    if (!range.total) {
+      return "0 of 0";
+    }
     const start = range.start.toLocaleString();
     const end = range.end.toLocaleString();
     const total = range.total.toLocaleString();

@@ -21,11 +21,7 @@ def attach_report_context(rows: list[dict[str, Any]], filters: Any) -> None:
         ).format(filters.presentation_currency),
         _("Recorded sync: {0}.").format(timestamp or _("Not recorded")),
     ]
-    if filters.get("disable_opening_balance_calculation"):
-        parts.append(_("Period movements only: opening history is excluded."))
-        for row in rows:
-            if row.get("row_type") == "closing":
-                row["account"] = _("Period net movement")
+    _append_period_context(parts, rows, filters)
     if filters.get("entry_type") != "All":
         parts.append(
             _("Balances include only the selected entry type: {0}.").format(
@@ -117,3 +113,13 @@ def _append_entry_exclusions(parts: list[str], filters: Any) -> None:
         parts.append(
             _("Manual entries are excluded from movements and opening balances.")
         )
+
+
+def _append_period_context(
+    parts: list[str], rows: list[dict[str, Any]], filters: Any
+) -> None:
+    if filters.get("disable_opening_balance_calculation"):
+        parts.append(_("Period movements only: opening history is excluded."))
+        for row in rows:
+            if row.get("row_type") == "closing":
+                row["account"] = _("Period net movement")

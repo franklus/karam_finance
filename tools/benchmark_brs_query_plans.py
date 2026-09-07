@@ -16,6 +16,8 @@ import importlib
 import statistics
 import time
 from collections.abc import Callable
+from operator import itemgetter
+from types import ModuleType
 from typing import Any, cast
 
 import frappe
@@ -26,19 +28,20 @@ _KARAM_REPORT = (
 )
 
 
-def benchmark(
+def benchmark(  # noqa: V103 - documented interactive developer-tool entry point.
     filters: dict[str, Any], *, repeats: int = 15, warmups: int = 3
 ) -> dict[str, Any]:
     """Compare equivalent upstream and Karam report executions."""
     if repeats < 1 or warmups < 0:
-        raise ValueError("repeats must be positive and warmups cannot be negative")
+        message = "repeats must be positive and warmups cannot be negative"
+        raise ValueError(message)
 
     upstream = importlib.import_module(
         "erpnext.accounts.report.bank_reconciliation_statement."
         "bank_reconciliation_statement"
     )
     karam = importlib.import_module(_KARAM_REPORT)
-    reports: dict[str, Callable] = {
+    reports: dict[str, Callable[..., Any]] = {
         "upstream_v16": upstream.execute,
         "karam": karam.execute,
     }
@@ -62,7 +65,7 @@ def benchmark(
     }
 
 
-def profile(
+def profile(  # noqa: V103 - documented interactive developer-tool entry point.
     filters: dict[str, Any], report_name: str = "karam"
 ) -> list[dict[str, Any]]:
     """Return one report's SQL timings without changing database state."""
@@ -77,7 +80,9 @@ def profile(
     timings: list[dict[str, Any]] = []
     original_sql = frappe.db.sql
 
-    def timing_sql(*args, sql=original_sql, **kwargs):
+    def timing_sql(
+        *args: Any, sql: Callable[..., Any] = original_sql, **kwargs: Any
+    ) -> Any:
         started = time.perf_counter()
         result = sql(*args, **kwargs)
         timings.append(
@@ -94,7 +99,7 @@ def profile(
         report(frappe._dict(copy.deepcopy(filters)))
     finally:
         frappe.db.sql = original_sql
-    return sorted(timings, key=lambda query: query["wall_time_ms"], reverse=True)
+    return sorted(timings, key=itemgetter("wall_time_ms"), reverse=True)
 
 
 def profile_stages(filters: dict[str, Any]) -> dict[str, Any]:
@@ -110,76 +115,11 @@ def profile_stages(filters: dict[str, Any]) -> dict[str, Any]:
     }
     result: dict[str, Any] = {}
     for name, module in reports.items():
-        report = module.execute
-        stage_timings: list[dict[str, Any]] = []
-        originals: list[tuple[Any, str, Any]] = []
-        stage_targets = _stage_targets(module, name)
-        for target, stage_name in stage_targets:
-            original = getattr(target, stage_name, None)
-            if original is None:
-                continue
-
-            def timed_stage(
-                *args,
-                _stage=original,
-                _stage_name=stage_name,
-                _timings=stage_timings,
-                **kwargs,
-            ):
-                started = time.perf_counter()
-                value = _stage(*args, **kwargs)
-                _timings.append(
-                    {
-                        "stage": _stage_name,
-                        "wall_time_ms": round(
-                            (time.perf_counter() - started) * 1000, 3
-                        ),
-                    }
-                )
-                return value
-
-            setattr(target, stage_name, timed_stage)
-            originals.append((target, stage_name, original))
-
-        query_timings: list[dict[str, Any]] = []
-        original_sql = frappe.db.sql
-
-        def timing_sql(*args, sql=original_sql, _query_timings=query_timings, **kwargs):
-            started = time.perf_counter()
-            rows = sql(*args, **kwargs)
-            _query_timings.append(
-                {
-                    "wall_time_ms": round((time.perf_counter() - started) * 1000, 3),
-                    "rows": len(rows) if isinstance(rows, list) else None,
-                    "sql": " ".join(str(args[0]).split())[:260],
-                }
-            )
-            return rows
-
-        frappe.db.sql = cast(Any, timing_sql)
-        started = time.perf_counter()
-        try:
-            _columns, rows = report(frappe._dict(copy.deepcopy(filters)))
-        finally:
-            total_ms = (time.perf_counter() - started) * 1000
-            frappe.db.sql = original_sql
-            for target, stage_name, original in reversed(originals):
-                setattr(target, stage_name, original)
-        result[name] = {
-            "total_wall_time_ms": round(total_ms, 3),
-            "source_rows": sum(1 for row in rows if row.get("payment_document")),
-            "output_rows": len(rows),
-            "stages": stage_timings,
-            "queries": sorted(
-                query_timings,
-                key=lambda query: query["wall_time_ms"],
-                reverse=True,
-            ),
-        }
+        result[name] = _profile_report_stages(module, name, filters)
     return result
 
 
-def benchmark_stages(
+def benchmark_stages(  # noqa: V103 - documented interactive developer-tool entry point.
     filters: dict[str, Any], *, repeats: int = 10, warmups: int = 3
 ) -> dict[str, Any]:
     """Summarise repeated interleaved stage timings for both reports."""
@@ -193,7 +133,7 @@ def benchmark_stages(
         for report in reports:
             report(frappe._dict(copy.deepcopy(filters)))
 
-    observations = {"upstream_v16": [], "karam": []}
+    observations: dict[str, list[dict[str, Any]]] = {"upstream_v16": [], "karam": []}
     for _ in range(repeats):
         current = profile_stages(filters)
         observations["upstream_v16"].append(current["upstream_v16"])
@@ -201,42 +141,7 @@ def benchmark_stages(
 
     summary = {}
     for name, samples in observations.items():
-        stage_values: dict[str, list[float]] = {}
-        query_values: dict[str, list[float]] = {}
-        for sample in samples:
-            for stage in sample["stages"]:
-                stage_values.setdefault(stage["stage"], []).append(
-                    stage["wall_time_ms"]
-                )
-            for query in sample["queries"]:
-                query_values.setdefault(query["sql"], []).append(query["wall_time_ms"])
-        summary[name] = {
-            "median_total_ms": round(
-                statistics.median(sample["total_wall_time_ms"] for sample in samples),
-                3,
-            ),
-            "median_source_rows": statistics.median(
-                sample["source_rows"] for sample in samples
-            ),
-            "median_output_rows": statistics.median(
-                sample["output_rows"] for sample in samples
-            ),
-            "stage_medians_ms": {
-                stage: round(statistics.median(values), 3)
-                for stage, values in stage_values.items()
-            },
-            "slowest_query_medians_ms": [
-                {
-                    "median_ms": round(statistics.median(values), 3),
-                    "sql": sql,
-                }
-                for sql, values in sorted(
-                    query_values.items(),
-                    key=lambda item: statistics.median(item[1]),
-                    reverse=True,
-                )[:10]
-            ],
-        }
+        summary[name] = _summarise_stages(samples)
     return {
         "filters": dict(filters),
         "repeats": repeats,
@@ -245,7 +150,7 @@ def benchmark_stages(
     }
 
 
-def _stage_targets(module, report_name: str) -> list[tuple[Any, str]]:
+def _stage_targets(module: ModuleType, report_name: str) -> list[tuple[Any, str]]:
     if report_name == "upstream_v16":
         names = (
             "get_entries",
@@ -292,12 +197,14 @@ def _stage_targets(module, report_name: str) -> list[tuple[Any, str]]:
     return targets
 
 
-def _sample(report: Callable, filters: dict[str, Any]) -> dict[str, Any]:
+def _sample(report: Callable[..., Any], filters: dict[str, Any]) -> dict[str, Any]:
     query_count = 0
     materialised_rows = 0
     original_sql = frappe.db.sql
 
-    def counting_sql(*args, sql=original_sql, **kwargs):
+    def counting_sql(
+        *args: Any, sql: Callable[..., Any] = original_sql, **kwargs: Any
+    ) -> Any:
         nonlocal query_count, materialised_rows
         result = sql(*args, **kwargs)
         query_count += 1
@@ -339,3 +246,126 @@ def _summarise(samples: list[dict[str, Any]]) -> dict[str, Any]:
             sample["source_rows"] for sample in samples
         ),
     }
+
+
+def _timed_stage(
+    original: Callable[..., Any], stage_name: str, timings: list[dict[str, Any]]
+) -> Callable[..., Any]:
+    def timed_stage(
+        *args: Any,
+        _stage: Callable[..., Any] = original,
+        _stage_name=stage_name,
+        _timings=timings,
+        **kwargs: Any,
+    ) -> Any:
+        started = time.perf_counter()
+        value = _stage(*args, **kwargs)
+        _timings.append(
+            {
+                "stage": _stage_name,
+                "wall_time_ms": round((time.perf_counter() - started) * 1000, 3),
+            }
+        )
+        return value
+
+    return timed_stage
+
+
+def _profile_report_stages(
+    module: ModuleType, name: str, filters: dict[str, Any]
+) -> dict[str, Any]:
+    report = module.execute
+    stage_timings: list[dict[str, Any]] = []
+    originals: list[tuple[Any, str, Any]] = []
+    stage_targets = _stage_targets(module, name)
+    for target, stage_name in stage_targets:
+        original = getattr(target, stage_name, None)
+        if original is None:
+            continue
+
+        timed_stage = _timed_stage(original, stage_name, stage_timings)
+
+        setattr(target, stage_name, timed_stage)
+        originals.append((target, stage_name, original))
+
+    query_timings: list[dict[str, Any]] = []
+    original_sql = frappe.db.sql
+
+    def timing_sql(
+        *args: Any,
+        sql: Callable[..., Any] = original_sql,
+        _query_timings: list[dict[str, Any]] = query_timings,
+        **kwargs: Any,
+    ) -> Any:
+        started = time.perf_counter()
+        rows = sql(*args, **kwargs)
+        _query_timings.append(
+            {
+                "wall_time_ms": round((time.perf_counter() - started) * 1000, 3),
+                "rows": len(rows) if isinstance(rows, list) else None,
+                "sql": " ".join(str(args[0]).split())[:260],
+            }
+        )
+        return rows
+
+    frappe.db.sql = cast(Any, timing_sql)
+    started = time.perf_counter()
+    try:
+        _columns, rows = report(frappe._dict(copy.deepcopy(filters)))
+    finally:
+        total_ms = (time.perf_counter() - started) * 1000
+        frappe.db.sql = original_sql
+        for target, stage_name, original in reversed(originals):
+            setattr(target, stage_name, original)
+    return {
+        "total_wall_time_ms": round(total_ms, 3),
+        "source_rows": sum(1 for row in rows if row.get("payment_document")),
+        "output_rows": len(rows),
+        "stages": stage_timings,
+        "queries": sorted(
+            query_timings,
+            key=itemgetter("wall_time_ms"),
+            reverse=True,
+        ),
+    }
+
+
+def _summarise_stages(samples: list[dict[str, Any]]) -> dict[str, Any]:
+    stage_values: dict[str, list[float]] = {}
+    query_values: dict[str, list[float]] = {}
+    for sample in samples:
+        for stage in sample["stages"]:
+            stage_values.setdefault(stage["stage"], []).append(stage["wall_time_ms"])
+        for query in sample["queries"]:
+            query_values.setdefault(query["sql"], []).append(query["wall_time_ms"])
+    return {
+        "median_total_ms": round(
+            statistics.median(sample["total_wall_time_ms"] for sample in samples),
+            3,
+        ),
+        "median_source_rows": statistics.median(
+            sample["source_rows"] for sample in samples
+        ),
+        "median_output_rows": statistics.median(
+            sample["output_rows"] for sample in samples
+        ),
+        "stage_medians_ms": {
+            stage: round(statistics.median(values), 3)
+            for stage, values in stage_values.items()
+        },
+        "slowest_query_medians_ms": [
+            {
+                "median_ms": round(statistics.median(values), 3),
+                "sql": sql,
+            }
+            for sql, values in sorted(
+                query_values.items(),
+                key=_query_median,
+                reverse=True,
+            )[:10]
+        ],
+    }
+
+
+def _query_median(item: tuple[str, list[float]]) -> float:
+    return statistics.median(item[1])

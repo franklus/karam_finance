@@ -32,13 +32,7 @@ def project_requirement_policy() -> None:
     if not rows:
         return
 
-    requested_doctypes = [_row_value(row, "doctype_name") for row in rows]
-    if any(
-        not isinstance(doctype_name, str) or not doctype_name.strip()
-        for doctype_name in requested_doctypes
-    ):
-        raise ValueError("Karam Series Settings contains a blank DocType")
-
+    requested_doctypes = _requested_doctypes(rows)
     installed_doctypes = set(
         frappe.get_all(
             "DocType",
@@ -61,6 +55,26 @@ def project_requirement_policy() -> None:
     custom_fields_by_doctype = {
         str(field_row["dt"]): field_row for field_row in custom_field_rows
     }
+    _apply_requirement_changes(rows, installed_doctypes, custom_fields_by_doctype)
+
+
+def _requested_doctypes(rows: list[Any]) -> list[str]:
+    requested_doctypes = [_row_value(row, "doctype_name") for row in rows]
+    if any(
+        not isinstance(doctype_name, str) or not doctype_name.strip()
+        for doctype_name in requested_doctypes
+    ):
+        message = "Karam Series Settings contains a blank DocType"
+        raise ValueError(message)
+
+    return requested_doctypes
+
+
+def _apply_requirement_changes(
+    rows: list[Any],
+    installed_doctypes: set[str],
+    custom_fields_by_doctype: dict[str, Any],
+) -> None:
     updates: dict[str, dict[str, int]] = {}
     changed_doctypes: set[str] = set()
 
@@ -71,9 +85,10 @@ def project_requirement_policy() -> None:
 
         custom_field = custom_fields_by_doctype.get(doctype_name)
         if not custom_field:
-            raise RuntimeError(
+            message = (
                 f"Karam Series field is missing on existing DocType {doctype_name}"
             )
+            raise RuntimeError(message)
 
         required = int(
             bool(frappe.utils.cint(_row_value(row, "karam_series_mandatory")))

@@ -106,9 +106,6 @@ def _build_party_rows(
     *,
     filters: Any,
 ) -> Any:
-    party_name_field = display["party_name_field"]
-    show_party_name = display["show_party_name"]
-    company_currency = display["company_currency"]
     data = []
     total_company_values = _zero_values(COMPANY_VALUE_FIELDS)
     total_account_currency_values = _zero_values(ACCOUNT_CCY_VALUE_FIELDS)
@@ -117,42 +114,11 @@ def _build_party_rows(
     for party in parties:
         party_name = party.get("name")
         currency_balances = party_currency_balances.get(party_name, {})
-        if not currency_balances:
-            if not cint(filters.get("show_zero_values")) or filters.get(
-                "exclude_zero_balance_parties"
-            ):
+        rows = _rows_for_party(party, currency_balances, display, filters=filters)
+        for index, row in enumerate(rows):
+            data.append(row)
+            if not currency_balances:
                 continue
-            row = _build_zero_party_row(
-                party_name,
-                party.get(party_name_field),
-                show_party_name,
-                company_currency=company_currency,
-            )
-            data.append(row)
-            continue
-
-        company_values = _company_values(currency_balances.values())
-        if not _include_party(company_values, filters):
-            continue
-
-        account_currencies = sorted(currency_balances)
-        party_meta = {
-            "party": party_name,
-            "party_name": party.get(party_name_field),
-            "show_party_name": show_party_name,
-            "company_currency": company_currency,
-        }
-
-        for index, account_currency in enumerate(account_currencies):
-            account_values = currency_balances[account_currency]
-            row = build_party_row_from_sources(
-                party_meta,
-                account_currency,
-                company_values if index == 0 else {},
-                account_currency_values=account_values,
-                show_party_label=index == 0,
-            )
-            data.append(row)
             account_currencies_seen.update(_contributing_account_currency(row))
 
             if index == 0:
@@ -234,3 +200,44 @@ def _contributing_account_currency(row: dict[str, Any]) -> set[str]:
     if any(flt(row.get(field)) != 0 for field in ACCOUNT_CCY_VALUE_FIELDS):
         return {row["account_currency"]}
     return set()
+
+
+def _rows_for_party(
+    party: Any, currency_balances: Any, display: dict[str, Any], *, filters: Any
+) -> list[dict[str, Any]]:
+    party_name_field = display["party_name_field"]
+    show_party_name = display["show_party_name"]
+    company_currency = display["company_currency"]
+    party_name = party.get("name")
+    if not currency_balances:
+        if not cint(filters.get("show_zero_values")) or filters.get(
+            "exclude_zero_balance_parties"
+        ):
+            return []
+        return [
+            _build_zero_party_row(
+                party_name,
+                party.get(party_name_field),
+                show_party_name,
+                company_currency=company_currency,
+            )
+        ]
+    company_values = _company_values(currency_balances.values())
+    if not _include_party(company_values, filters):
+        return []
+    party_meta = {
+        "party": party_name,
+        "party_name": party.get(party_name_field),
+        "show_party_name": show_party_name,
+        "company_currency": company_currency,
+    }
+    return [
+        build_party_row_from_sources(
+            party_meta,
+            account_currency,
+            company_values if index == 0 else {},
+            account_currency_values=currency_balances[account_currency],
+            show_party_label=index == 0,
+        )
+        for index, account_currency in enumerate(sorted(currency_balances))
+    ]

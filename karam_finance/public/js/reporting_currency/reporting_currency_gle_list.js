@@ -17,7 +17,7 @@ frappe.listview_settings["Reporting Currency GLE"] = {
             callback(_r) {
               frappe.show_alert({
                 message: __("All Reporting Currency GLE records have been deleted."),
-                indicator: "green",
+                indicator: "green"
               });
               listview.refresh();
             },
@@ -27,9 +27,9 @@ frappe.listview_settings["Reporting Currency GLE"] = {
                 message: __(
                   "Failed to delete records. Please check if you have the required permissions (System Manager role)."
                 ),
-                indicator: "red",
+                indicator: "red"
               });
-            },
+            }
           });
         }
       );
@@ -44,5 +44,6 @@ frappe.listview_settings["Reporting Currency GLE"] = {
     if (doc.gl_entry) {
       return [__("Synced"), "blue", "gl_entry,!=,"];
     }
-  },
+    return undefined;
+  }
 };

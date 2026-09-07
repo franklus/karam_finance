@@ -14,7 +14,11 @@ def execute() -> None:
         # Never merge distinct report definitions if a conflicting target exists.
         frappe.rename_doc("Report", old_name, new_name, force=True)
         frappe.db.set_value("Report", new_name, "report_name", new_name)
-        for doctype in ("Workspace Link", "Workspace Shortcut", "Workspace Sidebar Item"):
+        for doctype in (
+            "Workspace Link",
+            "Workspace Shortcut",
+            "Workspace Sidebar Item",
+        ):
             frappe.db.set_value(
                 doctype, {"link_to": new_name, "label": old_name}, "label", new_name
             )

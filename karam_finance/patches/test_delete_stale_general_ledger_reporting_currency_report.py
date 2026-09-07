@@ -5,12 +5,11 @@ from __future__ import annotations
 import importlib.util
 from pathlib import Path
 from typing import TYPE_CHECKING
-from unittest.mock import MagicMock
+from unittest import TestCase
+from unittest.mock import MagicMock, patch
 
 if TYPE_CHECKING:
     from types import ModuleType
-
-    import pytest
 
 
 def _load_patch() -> ModuleType:
@@ -27,38 +26,63 @@ def _load_patch() -> ModuleType:
     return module
 
 
-def test_execute_deletes_stale_report_when_present(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """Delete only the obsolete report row."""
-    patch = _load_patch()
-    frappe = MagicMock()
-    frappe.db.exists.return_value = True
-    monkeypatch.setattr(patch, "frappe", frappe)
+class TestDeleteStaleGeneralLedgerReportingCurrencyReport(TestCase):
+    def test_execute_is_a_noop(self) -> None:
+        """Keep the new live report safe when this pending patch runs."""
+        patch_module = _load_patch()
+        self.assertIsNone(patch_module.execute())
 
-    patch.execute()
+    def test_pending_rename_then_cleanup_preserves_live_report(self) -> None:
+        """Model both pending patches without touching a site database."""
+        rename = _load_patch_file("rename_reporting_currency_reports.py")
+        cleanup = _load_patch()
+        reports = {"General Ledger (Reporting)"}
+        frappe_stub = MagicMock()
+        cleanup_frappe = MagicMock()
 
-    frappe.db.exists.assert_called_once_with("Report", patch.STALE_REPORT)
-    frappe.delete_doc.assert_called_once_with(
-        "Report",
-        patch.STALE_REPORT,
-        force=True,
-        ignore_permissions=True,
-    )
-    frappe.clear_cache.assert_called_once_with(doctype="Report")
+        def report_exists(_doctype: str, name: str) -> bool:
+            return name in reports
+
+        frappe_stub.db.exists.side_effect = report_exists
+
+        def rename_doc(
+            _doctype: str, old_name: str, new_name: str, **_kwargs: object
+        ) -> None:
+            reports.remove(old_name)
+            reports.add(new_name)
+
+        frappe_stub.rename_doc.side_effect = rename_doc
+
+        with (
+            patch.object(rename, "frappe", frappe_stub),
+            patch.object(cleanup, "frappe", cleanup_frappe, create=True),
+        ):
+            rename.execute()
+            cleanup.execute()
+
+        self.assertEqual(reports, {"General Ledger (Reporting Currency)"})
+        frappe_stub.db.set_value.assert_any_call(
+            "Workspace Link",
+            {
+                "link_to": "General Ledger (Reporting Currency)",
+                "label": "General Ledger (Reporting)",
+            },
+            "label",
+            "General Ledger (Reporting Currency)",
+        )
+        cleanup_frappe.db.exists.assert_not_called()
+        cleanup_frappe.db.set_value.assert_not_called()
+        cleanup_frappe.delete_doc.assert_not_called()
+        cleanup_frappe.clear_cache.assert_not_called()
 
 
-def test_execute_is_noop_when_stale_report_is_absent(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """Leave clean sites untouched."""
-    patch = _load_patch()
-    frappe = MagicMock()
-    frappe.db.exists.return_value = False
-    monkeypatch.setattr(patch, "frappe", frappe)
+def _load_patch_file(filename: str) -> ModuleType:
+    """Load a sibling patch without relying on Bench package discovery."""
+    path = Path(__file__).with_name(filename)
+    spec = importlib.util.spec_from_file_location(path.stem, path)
+    if spec is None or spec.loader is None:
+        raise ImportError(path)
 
-    patch.execute()
-
-    frappe.db.exists.assert_called_once_with("Report", patch.STALE_REPORT)
-    frappe.delete_doc.assert_not_called()
-    frappe.clear_cache.assert_not_called()
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module

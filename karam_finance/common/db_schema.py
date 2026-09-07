@@ -7,11 +7,12 @@ precision and capacity across all modules.
 from __future__ import annotations
 
 import threading
+from typing import Any
 
 import click
 import frappe
 
-# Thread-safe flag so we only widen columns once per worker process
+# Remember successful checks per site in this worker thread.
 _currency_columns_verified = threading.local()
 
 # Decimal column width (total digits) for currency/float fields
@@ -26,6 +27,13 @@ DECIMAL_PRECISION = 4
 
 # Fields requiring wider decimal columns, keyed by DocType
 WIDENED_FLOAT_FIELDS: dict[str, list[str]] = {
+    "Journal Entry": [
+        "total_debit",
+        "total_credit",
+        "difference",
+        "total_amount",
+        "write_off_amount",
+    ],
     "Journal Entry Account": [
         "exchange_rate",
         "debit",
@@ -40,6 +48,8 @@ WIDENED_FLOAT_FIELDS: dict[str, list[str]] = {
         "debit_in_account_currency",
         "credit_in_transaction_currency",
         "debit_in_transaction_currency",
+        "debit_in_reporting_currency",
+        "credit_in_reporting_currency",
         "transaction_exchange_rate",
     ],
     "Account Closing Balance": [
@@ -58,10 +68,70 @@ _PROPERTY_CONFIGS = [
 ]
 
 
+def _get_property_setter_targets() -> list[dict[str, str]]:
+    """Build the required field overrides from the capacity specification."""
+    targets: list[dict[str, str]] = []
+    for doctype, fields in WIDENED_FLOAT_FIELDS.items():
+        for fieldname in fields:
+            for prop, prop_type, value in _PROPERTY_CONFIGS:
+                targets.append(
+                    {
+                        "name": f"{doctype}-{fieldname}-{prop}",
+                        "doc_type": doctype,
+                        "field_name": fieldname,
+                        "property": prop,
+                        "property_type": prop_type,
+                        "value": value,
+                    }
+                )
+    return targets
+
+
+def _insert_property_setters(inserts: list[dict[str, str]]) -> None:
+    """Insert missing overrides with Frappe ownership and timestamp fields."""
+    now = frappe.utils.now()
+    session = getattr(frappe, "session", None)
+    user = session.user if session and session.user else "Administrator"
+    if not user:
+        user = "Administrator"
+    fields = [
+        "name",
+        "owner",
+        "creation",
+        "modified",
+        "modified_by",
+        "doc_type",
+        "field_name",
+        "property",
+        "property_type",
+        "value",
+        "doctype_or_field",
+    ]
+    values = [
+        [
+            target["name"],
+            user,
+            now,
+            now,
+            user,
+            target["doc_type"],
+            target["field_name"],
+            target["property"],
+            target["property_type"],
+            target["value"],
+            "DocField",
+        ]
+        for target in inserts
+    ]
+    frappe.db.bulk_insert("Property Setter", fields=fields, values=values)
+    for target in inserts:
+        click.echo(f"  CREATED {target['name']} = {target['value']}")
+
+
 def _ensure_property_setters() -> None:
     """Create or update Property Setters for ERPNext DocType field overrides.
 
-    Property Setters are required because GL Entry, Journal Entry Account, and
+    Property Setters are required because Journal Entry, GL Entry, Journal Entry Account, and
     Account Closing Balance are ERPNext core DocTypes. Without these overrides,
     Frappe's schema sync would attempt to revert columns to DECIMAL(21,9),
     which fails if data exceeds 12 integer digits.
@@ -77,20 +147,7 @@ def _ensure_property_setters() -> None:
 
     created, updated, unchanged = 0, 0, 0
 
-    targets: list[dict[str, str]] = []
-    for doctype, fields in WIDENED_FLOAT_FIELDS.items():
-        for fieldname in fields:
-            for prop, prop_type, value in _PROPERTY_CONFIGS:
-                targets.append(
-                    {
-                        "name": f"{doctype}-{fieldname}-{prop}",
-                        "doc_type": doctype,
-                        "field_name": fieldname,
-                        "property": prop,
-                        "property_type": prop_type,
-                        "value": value,
-                    }
-                )
+    targets = _get_property_setter_targets()
 
     existing_rows = frappe.get_all(
         "Property Setter",
@@ -117,44 +174,8 @@ def _ensure_property_setters() -> None:
             unchanged += 1
 
     if inserts:
-        now = frappe.utils.now()
-        session = getattr(frappe, "session", None)
-        user = session.user if session and session.user else "Administrator"
-        if not user:
-            user = "Administrator"
-        fields = [
-            "name",
-            "owner",
-            "creation",
-            "modified",
-            "modified_by",
-            "doc_type",
-            "field_name",
-            "property",
-            "property_type",
-            "value",
-            "doctype_or_field",
-        ]
-        values = [
-            [
-                target["name"],
-                user,
-                now,
-                now,
-                user,
-                target["doc_type"],
-                target["field_name"],
-                target["property"],
-                target["property_type"],
-                target["value"],
-                "DocField",
-            ]
-            for target in inserts
-        ]
-        frappe.db.bulk_insert("Property Setter", fields=fields, values=values)
-        for target in inserts:
-            click.echo(f"  CREATED {target['name']} = {target['value']}")
-        created += len(inserts)
+        _insert_property_setters(inserts)
+        created = len(inserts)
 
     if updates:
         frappe.db.bulk_update("Property Setter", updates)
@@ -174,7 +195,9 @@ def ensure_currency_columns_capacity() -> None:
 
     DECIMAL(30,4) provides 26 integer digits capacity (vs 12 with default 21,9).
     """
-    if getattr(_currency_columns_verified, "done", False):
+    site = frappe.local.site
+    verified_sites = getattr(_currency_columns_verified, "sites", set())
+    if site in verified_sites:
         return
 
     _ensure_property_setters()
@@ -201,42 +224,58 @@ def ensure_currency_columns_capacity() -> None:
         "transaction_exchange_rate",
     ]
 
-    for table_name, columns in tables.items():  # nosemgrep: frappe-db-commit-in-loop
-        if not columns:
+    existing_columns = _get_capacity_columns(tables)
+    for table_name, columns in tables.items():
+        _ensure_table_columns_capacity(table_name, columns, existing_columns)
+
+    verified_sites.add(site)
+    _currency_columns_verified.sites = verified_sites
+
+
+def _get_capacity_columns(tables: dict[str, list[str]]) -> dict[tuple[str, str], Any]:
+    """Read metadata for all target tables in one database round trip."""
+    rows = frappe.db.sql(
+        """
+        SELECT table_name, column_name, column_type, is_nullable
+        FROM information_schema.columns
+        WHERE table_schema = DATABASE()
+            AND table_name IN %(tables)s
+            AND column_name IN %(columns)s
+        """,
+        {
+            "tables": tuple(tables),
+            "columns": tuple(
+                sorted({column for columns in tables.values() for column in columns})
+            ),
+        },
+        as_dict=True,
+    )
+    return {(row.table_name, row.column_name): row for row in rows}
+
+
+def _ensure_table_columns_capacity(
+    table_name: str, columns: list[str], existing_columns: dict[tuple[str, str], Any]
+) -> None:
+    """Widen only existing columns that need repair, using prefetched metadata."""
+    target_type = f"decimal({DECIMAL_WIDTH},{DECIMAL_PRECISION})"
+
+    for column in columns:  # nosemgrep: frappe-db-commit-in-loop
+        col_info = existing_columns.get((table_name, column))
+        if not col_info:
             continue
 
-        existing_columns = {
-            row.column_name: row
-            for row in frappe.db.sql(
-                """
-                SELECT column_name, column_type, is_nullable
-                FROM information_schema.columns
-                WHERE table_schema = DATABASE()
-                    AND table_name = %(table)s
-                    AND column_name IN %(columns)s
-                """,
-                {"table": table_name, "columns": tuple(columns)},
-                as_dict=True,
-            )
-        }
-
-        target_type = f"decimal({DECIMAL_WIDTH},{DECIMAL_PRECISION})"
-
-        for column in columns:  # nosemgrep: frappe-db-commit-in-loop
-            col_info = existing_columns.get(column)
-            if not col_info:
-                continue
-
-            if col_info.column_type != target_type or col_info.is_nullable == "YES":
-                if col_info.is_nullable == "YES":
-                    frappe.db.sql(
-                        f"UPDATE `{table_name}` SET `{column}` = 0 "  # noqa: S608
-                        f"WHERE `{column}` IS NULL"
-                    )
-                    frappe.db.commit()  # nosemgrep — DDL requires committed data
+        if col_info.column_type != target_type or col_info.is_nullable == "YES":
+            if col_info.is_nullable == "YES":
+                # Per-column data repair before DDL; this is a write, not an N+1 read.
+                # nosemgrep: frappe-n-plus-one-read-in-loop
                 frappe.db.sql(
-                    f"ALTER TABLE `{table_name}` MODIFY `{column}` "
-                    f"DECIMAL({DECIMAL_WIDTH},{DECIMAL_PRECISION}) NOT NULL DEFAULT 0"
+                    f"UPDATE `{table_name}` SET `{column}` = 0 "  # noqa: S608
+                    f"WHERE `{column}` IS NULL"
                 )
-
-    _currency_columns_verified.done = True
+                frappe.db.commit()  # nosemgrep — DDL requires committed data
+            # Each column needs its own DDL statement after its optional repair.
+            # nosemgrep: frappe-n-plus-one-read-in-loop
+            frappe.db.sql(
+                f"ALTER TABLE `{table_name}` MODIFY `{column}` "
+                f"DECIMAL({DECIMAL_WIDTH},{DECIMAL_PRECISION}) NOT NULL DEFAULT 0"
+            )

@@ -5,12 +5,11 @@ from __future__ import annotations
 import importlib.util
 from pathlib import Path
 from typing import TYPE_CHECKING
-from unittest.mock import MagicMock
+from unittest import TestCase
+from unittest.mock import MagicMock, patch
 
 if TYPE_CHECKING:
     from types import ModuleType
-
-    import pytest
 
 
 def _load_patch() -> ModuleType:
@@ -25,38 +24,34 @@ def _load_patch() -> ModuleType:
     return module
 
 
-def test_execute_deletes_stale_report_when_present(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """Delete only the obsolete report row."""
-    patch = _load_patch()
-    frappe = MagicMock()
-    frappe.db.exists.return_value = True
-    monkeypatch.setattr(patch, "frappe", frappe)
+class TestDeleteStaleTrialBalanceReportingReport(TestCase):
+    def test_execute_deletes_stale_report_when_present(self) -> None:
+        """Delete only the obsolete report row."""
+        patch_module = _load_patch()
+        frappe = MagicMock()
+        frappe.db.exists.return_value = True
 
-    patch.execute()
+        with patch.object(patch_module, "frappe", frappe):
+            patch_module.execute()
 
-    frappe.db.exists.assert_called_once_with("Report", patch.STALE_REPORT)
-    frappe.delete_doc.assert_called_once_with(
-        "Report",
-        patch.STALE_REPORT,
-        force=True,
-        ignore_permissions=True,
-    )
-    frappe.clear_cache.assert_called_once_with(doctype="Report")
+        frappe.db.exists.assert_called_once_with("Report", patch_module.STALE_REPORT)
+        frappe.delete_doc.assert_called_once_with(
+            "Report",
+            patch_module.STALE_REPORT,
+            force=True,
+            ignore_permissions=True,
+        )
+        frappe.clear_cache.assert_called_once_with(doctype="Report")
 
+    def test_execute_is_noop_when_stale_report_is_absent(self) -> None:
+        """Leave clean sites untouched."""
+        patch_module = _load_patch()
+        frappe = MagicMock()
+        frappe.db.exists.return_value = False
 
-def test_execute_is_noop_when_stale_report_is_absent(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """Leave clean sites untouched."""
-    patch = _load_patch()
-    frappe = MagicMock()
-    frappe.db.exists.return_value = False
-    monkeypatch.setattr(patch, "frappe", frappe)
+        with patch.object(patch_module, "frappe", frappe):
+            patch_module.execute()
 
-    patch.execute()
-
-    frappe.db.exists.assert_called_once_with("Report", patch.STALE_REPORT)
-    frappe.delete_doc.assert_not_called()
-    frappe.clear_cache.assert_not_called()
+        frappe.db.exists.assert_called_once_with("Report", patch_module.STALE_REPORT)
+        frappe.delete_doc.assert_not_called()
+        frappe.clear_cache.assert_not_called()

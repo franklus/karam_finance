@@ -21,7 +21,9 @@ function assertPrompted(harness) {
 async function testRegistrationAndScope() {
   const harness = createHarness();
   ["rate", "discount_percentage", "discount_amount", "margin_type"].forEach(
-    (fieldname) => assert.equal(harness.handlers[fieldname], undefined)
+    (fieldname) => {
+      assert.equal(harness.handlers[fieldname], undefined);
+    }
   );
   await triggerManualPrompt(harness);
   assertPrompted(harness);
@@ -111,7 +113,7 @@ async function testPromptOnceAndErrors() {
   assertPrompted(both);
 
   const generic = createHarness();
-  generic.setCallImplementation(() => Promise.reject({ message: "Network failed" }));
+  generic.setCallImplementation(() => rejectFrappeResponse("Network failed"));
   await triggerManualPrompt(generic);
   assert.equal(
     generic.alerts[0].message,
@@ -120,7 +122,7 @@ async function testPromptOnceAndErrors() {
 
   const duplicate = createHarness();
   duplicate.setCallImplementation(() =>
-    Promise.reject({ message: "with the same Valid From date" })
+    rejectFrappeResponse("with the same Valid From date")
   );
   await triggerManualPrompt(duplicate);
   assert.equal(duplicate.alerts.length, 0);
@@ -133,7 +135,7 @@ async function testDuplicateReversionWaitsForDialog() {
     withMessageDialog: false
   });
   harness.setCallImplementation(() =>
-    Promise.reject({ message: "with the same Valid From date" })
+    rejectFrappeResponse("with the same Valid From date")
   );
   await triggerManualPrompt(harness);
   await harness.flushTimers();
@@ -144,6 +146,12 @@ async function testDuplicateReversionWaitsForDialog() {
     harness.alerts.at(-1).message,
     "Rate reverted to the existing Item Price value."
   );
+}
+
+function rejectFrappeResponse(message) {
+  // Frappe AJAX failures reject with response objects rather than Error instances.
+  // eslint-disable-next-line prefer-promise-reject-errors
+  return Promise.reject({ message });
 }
 
 async function run() {

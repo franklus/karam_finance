@@ -34,7 +34,7 @@ def _patch_fixture_path(monkeypatch: pytest.MonkeyPatch, base_path: Path) -> Non
     monkeypatch.setattr(
         custom_fields.frappe,
         "get_app_path",
-        lambda _app_name, *_segments: str(base_path),
+        MagicMock(return_value=str(base_path)),
     )
 
 
@@ -55,7 +55,7 @@ def test_schema_integrity_skips_missing_optional_doctype(
 
     db = MagicMock()
     monkeypatch.setattr(custom_fields.frappe, "db", db)
-    monkeypatch.setattr(custom_fields.frappe, "get_all", lambda *_args, **_kwargs: [])
+    monkeypatch.setattr(custom_fields.frappe, "get_all", MagicMock(return_value=[]))
     apply_fields = MagicMock()
     monkeypatch.setattr(custom_fields, "frappe_create_custom_fields", apply_fields)
 
@@ -102,11 +102,12 @@ def test_schema_integrity_rolls_back_and_raises_on_apply_failure(
     monkeypatch.setattr(
         custom_fields.frappe,
         "get_all",
-        lambda *_args, **_kwargs: ["Journal Entry"],
+        MagicMock(return_value=["Journal Entry"]),
     )
 
     def fail_to_apply(_fields: dict[str, list[dict[str, Any]]], **_kwargs: Any) -> None:
-        raise RuntimeError("simulated Custom Field failure")
+        message = "simulated Custom Field failure"
+        raise RuntimeError(message)
 
     monkeypatch.setattr(custom_fields, "frappe_create_custom_fields", fail_to_apply)
 
@@ -136,7 +137,7 @@ def test_schema_integrity_custom_field_application_is_idempotent(
     monkeypatch.setattr(
         custom_fields.frappe,
         "get_all",
-        lambda *_args, **_kwargs: ["Journal Entry"],
+        MagicMock(return_value=["Journal Entry"]),
     )
     apply_fields = MagicMock()
     monkeypatch.setattr(custom_fields, "frappe_create_custom_fields", apply_fields)
@@ -161,7 +162,7 @@ def test_schema_integrity_requirement_projection_is_idempotent(
         {"doctype_name": "Optional ERPNext Feature", "karam_series_mandatory": 1},
     ]
     monkeypatch.setattr(
-        series_custom_fields.frappe, "get_single", lambda _name: settings
+        series_custom_fields.frappe, "get_single", MagicMock(return_value=settings)
     )
 
     db = MagicMock()
@@ -175,9 +176,7 @@ def test_schema_integrity_requirement_projection_is_idempotent(
         ]
     )
     monkeypatch.setattr(series_custom_fields.frappe, "get_all", get_all)
-    monkeypatch.setattr(
-        series_custom_fields.frappe.utils, "cint", lambda value: int(value or 0)
-    )
+    monkeypatch.setattr(series_custom_fields.frappe.utils, "cint", _integer_value)
     clear_cache = MagicMock()
     monkeypatch.setattr(series_custom_fields.frappe, "clear_cache", clear_cache)
 
@@ -189,3 +188,7 @@ def test_schema_integrity_requirement_projection_is_idempotent(
         "Custom Field", {"Journal Entry-karam_series": {"reqd": 1}}
     )
     clear_cache.assert_called_once_with(doctype="Journal Entry")
+
+
+def _integer_value(value: Any) -> int:
+    return int(value or 0)

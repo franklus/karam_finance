@@ -50,6 +50,7 @@ def get_reporting_currency_balances(filters: Any, account_filter: Any = None) ->
     )
 
     query = _apply_common_filters(query, rcgle, filters, account_filter=account_filter)
+    query = _apply_source_permissions(query, rcgle, filters)
 
     results = {}
     for row in query.run(as_dict=True):
@@ -60,6 +61,28 @@ def get_reporting_currency_balances(filters: Any, account_filter: Any = None) ->
             "credit": flt(row.credit),
         }
     return results
+
+
+def _apply_source_permissions(query: Any, rcgle: Any, filters: Any) -> Any:
+    """Apply source-row and Dynamic Link party permissions before grouping."""
+    permitted_rc_gle = frappe.qb.get_query(
+        DOCTYPE_RC_GLE,
+        fields=["name"],
+        ignore_permissions=False,
+    )
+    query = query.where(rcgle.name.isin(permitted_rc_gle))
+
+    # ``party`` is a Dynamic Link, so Frappe cannot infer its target doctype
+    # while applying Reporting Currency GLE user permissions.
+    party_filters = {"name": filters.party} if filters.get("party") else None
+    permitted_parties = frappe.qb.get_query(
+        filters.party_type,
+        fields=["name"],
+        filters=party_filters,
+        ignore_permissions=False,
+        reference_doctype=DOCTYPE_RC_GLE,
+    )
+    return query.where(rcgle.party.isin(permitted_parties))
 
 
 def _opening_case(rcgle: Any, filters: Any, amount_field: Any) -> Any:
@@ -75,12 +98,13 @@ def _opening_case(rcgle: Any, filters: Any, amount_field: Any) -> Any:
 
 
 def _period_case(rcgle: Any, filters: Any, amount_field: Any) -> Any:
+    # Legacy bulk-inserted DOE rows have NULL opening flags.
     return (
         Case()
         .when(
             (rcgle.posting_date >= filters.from_date)
             & (rcgle.posting_date <= filters.to_date)
-            & (rcgle.is_opening == "No"),
+            & ((rcgle.is_opening == "No") | rcgle.is_opening.isnull()),
             amount_field,
         )
         .else_(0)

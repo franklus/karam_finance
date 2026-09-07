@@ -246,21 +246,8 @@ def get_columns(filters: dict[str, Any]) -> list[dict[str, Any]]:
 def _order_rc_columns(
     columns: list[dict[str, Any]], filters: dict[str, Any]
 ) -> list[dict[str, Any]]:
-    columns = [column for column in columns if column.get("fieldname") != "letter"]
+    columns = _visible_rc_columns(columns, filters)
     primary = {"debit", "credit", "balance"}
-    source = {
-        "account_currency",
-        "debit_in_account_currency",
-        "credit_in_account_currency",
-        "balance_in_account_currency",
-        "debit_in_company_currency",
-        "credit_in_company_currency",
-        "balance_in_company_currency",
-    }
-    if not filters.get("show_source_currency_columns"):
-        columns = [
-            column for column in columns if column.get("fieldname") not in source
-        ]
     first = {"gl_entry", "posting_date", "account"}
     ordered = [column for column in columns if column.get("fieldname") in first]
     ordered.append(
@@ -357,3 +344,23 @@ def _get_dimension_columns(filters: dict[str, Any]) -> list[dict[str, Any]]:
         }
     )
     return [column for column in columns if column.get("fieldname") != "letter"]
+
+
+def _visible_rc_columns(
+    columns: list[dict[str, Any]], filters: dict[str, Any]
+) -> list[dict[str, Any]]:
+    columns = [column for column in columns if column.get("fieldname") != "letter"]
+    source = {
+        "account_currency",
+        "debit_in_account_currency",
+        "credit_in_account_currency",
+        "balance_in_account_currency",
+        "debit_in_company_currency",
+        "credit_in_company_currency",
+        "balance_in_company_currency",
+    }
+    if not filters.get("show_source_currency_columns"):
+        columns = [
+            column for column in columns if column.get("fieldname") not in source
+        ]
+    return columns

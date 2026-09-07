@@ -1,1 +1,1 @@
-# ruff: noqa: D104
+"""Reporting Currency regression tests."""

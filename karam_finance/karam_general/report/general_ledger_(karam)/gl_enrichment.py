@@ -95,17 +95,10 @@ def _collect_voucher_names(
     """Collect distinct source names without building a per-row index."""
     targets: dict[str, set[str]] = {}
     for entry in gl_entries:
-        if entry.get("karam_series") and entry.get("translation"):
+        identity = _voucher_identity(entry, include_journal_entries)
+        if identity is None:
             continue
-
-        voucher_type = entry.get("voucher_type")
-        voucher_no = entry.get("voucher_no")
-        if not voucher_type or not voucher_no:
-            continue
-        if voucher_type == "Journal Entry" and not include_journal_entries:
-            continue
-        if voucher_type not in KARAM_DOCTYPES:
-            continue
+        voucher_type, voucher_no = identity
         targets.setdefault(voucher_type, set()).add(voucher_no)
     return targets
 
@@ -118,18 +111,10 @@ def _collect_voucher_targets(
     entry_index: dict[tuple[str, str], list[frappe._dict[str, Any]]] = {}
 
     for entry in gl_entries:
-        if entry.get("karam_series") and entry.get("translation"):
+        identity = _voucher_identity(entry, include_journal_entries)
+        if identity is None:
             continue
-
-        voucher_type = entry.get("voucher_type")
-        voucher_no = entry.get("voucher_no")
-        if not voucher_type or not voucher_no:
-            continue
-        if voucher_type == "Journal Entry" and not include_journal_entries:
-            continue
-        if voucher_type not in KARAM_DOCTYPES:
-            continue
-
+        voucher_type, voucher_no = identity
         targets.setdefault(voucher_type, set()).add(voucher_no)
         entry_index.setdefault((voucher_type, voucher_no), []).append(entry)
 
@@ -182,6 +167,18 @@ def _fetch_voucher_data(
             return _fetch_single_voucher_data(doctype, fields, names)
         return {}
 
+    return _fetch_union_voucher_data(
+        doctypes, names_by_doctype, series=series, translation=translation
+    )
+
+
+def _fetch_union_voucher_data(
+    doctypes: list[str],
+    names_by_doctype: dict[str, set[str]] | None,
+    *,
+    series: str | None,
+    translation: str | None,
+) -> dict[tuple[str, str], dict[str, Any]]:
     queries = [
         query
         for index, doctype in enumerate(doctypes)
@@ -212,6 +209,12 @@ def _fetch_voucher_data(
             }
         )
     rows = frappe.db.sql(sql, parameters, as_dict=True)
+    return _index_voucher_rows(rows)
+
+
+def _index_voucher_rows(
+    rows: list[dict[str, Any]],
+) -> dict[tuple[str, str], dict[str, Any]]:
     return {
         (row["_doctype"], row["name"]): {
             "name": row["name"],
@@ -326,16 +329,7 @@ def _voucher_query_criteria(
         escaped = escaped.replace("%", "\\%").replace("_", "\\_")
         criteria.append(table.translation.like(f"%{escaped}%"))
     else:
-        value_conditions = []
-        if "karam_series" in fields:
-            value_conditions.append(
-                table.karam_series.notnull() & (table.karam_series != "")
-            )
-        if "translation" in fields:
-            value_conditions.append(
-                table.translation.notnull() & (table.translation != "")
-            )
-        if value_conditions:
+        if value_conditions := _karam_value_conditions(table, fields):
             criteria.append(Criterion.any(value_conditions))
     return criteria
 
@@ -390,11 +384,7 @@ def _apply_voucher_data_to_entries(
         source_row = voucher_data.get((doctype, voucher_no))
         if not source_row:
             continue
-        for entry in entries:
-            if not entry.get("karam_series"):
-                entry["karam_series"] = source_row.get("karam_series")
-            if not entry.get("translation"):
-                entry["translation"] = source_row.get("translation")
+        _apply_missing_karam_fields(entries, source_row)
 
 
 def _apply_voucher_data_to_gl_entries(
@@ -422,3 +412,35 @@ def _chunked(values: list[str], size: int) -> Iterable[list[str]]:
         size = VOUCHER_LOOKUP_BATCH_SIZE
     for idx in range(0, len(values), size):
         yield values[idx : idx + size]
+
+
+def _voucher_identity(
+    entry: frappe._dict[str, Any], include_journal_entries: bool
+) -> tuple[str, str] | None:
+    if entry.get("karam_series") and entry.get("translation"):
+        return None
+    voucher_type, voucher_no = entry.get("voucher_type"), entry.get("voucher_no")
+    if not voucher_type or not voucher_no:
+        return None
+    if voucher_type == "Journal Entry" and not include_journal_entries:
+        return None
+    if voucher_type not in KARAM_DOCTYPES:
+        return None
+    return voucher_type, voucher_no
+
+
+def _apply_missing_karam_fields(
+    entries: list[frappe._dict[str, Any]], source_row: dict[str, Any]
+) -> None:
+    for entry in entries:
+        for field in ("karam_series", "translation"):
+            if not entry.get(field):
+                entry[field] = source_row.get(field)
+
+
+def _karam_value_conditions(table: Table, fields: list[str]) -> list[Term]:
+    return [
+        table[field].notnull() & (table[field] != "")
+        for field in ("karam_series", "translation")
+        if field in fields
+    ]

@@ -38,7 +38,7 @@ class TestBankReconciliationStatementReport(FrappeTestCase):
     def test_get_entries_sorts_and_enriches_additive_entries(self) -> None:
         module = _load_module()
         filters = _dict(
-            account="Bank - TC", company="Test Company", report_date=date.today()
+            account="Bank - TC", company="Test Company", report_date=date(2024, 5, 31)
         )
         entries = [
             _dict(
@@ -82,7 +82,7 @@ class TestBankReconciliationStatementReport(FrappeTestCase):
     def test_journal_entry_query_hydrates_first_party_in_source_query(self) -> None:
         module = _load_module()
         filters = _dict(
-            account="Bank - TC", company="Test Company", report_date=date.today()
+            account="Bank - TC", company="Test Company", report_date=date(2024, 5, 31)
         )
 
         sql = module.brs_queries._journal_entry_query(

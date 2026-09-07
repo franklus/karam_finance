@@ -145,12 +145,32 @@ def _run_party_currency_query(
     )
     if account_filter:
         gl_scope &= gl_entry.account.isin(account_filter)
+    # Keep source permissions in the join scope so permitted zero-balance
+    # parties survive the all-party LEFT JOIN without restricted GL amounts.
+    gl_scope &= gl_entry.name.isin(
+        frappe.qb.get_query("GL Entry", fields=["name"], ignore_permissions=False)
+    )
     query = _party_query(
         gl_entry,
         party_entry,
         gl_scope,
         filters=filters,
         include_all_parties=include_all_parties,
+    )
+    party_field = (
+        party_entry.name
+        if include_all_parties and party_entry is not None
+        else gl_entry.party
+    )
+    query = query.where(
+        party_field.isin(
+            frappe.qb.get_query(
+                filters.party_type,
+                fields=["name"],
+                ignore_permissions=False,
+                reference_doctype="GL Entry",
+            )
+        )
     )
     query = query.select(*select_fields)
     if group_by_account_currency:

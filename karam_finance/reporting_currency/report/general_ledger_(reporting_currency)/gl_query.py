@@ -85,7 +85,7 @@ def get_gl_entries(
     account = frappe.qb.DocType("Account")
     query = frappe.qb.from_(gl).left_join(account).on(gl.account == account.name)
 
-    if filters.get("karam_series") or filters.get("translation"):
+    if _has_voucher_filters(filters):
         voucher_data = _get_voucher_data_for_filters(filters)
 
     criteria = _build_qb_conditions(filters, gl, voucher_data)
@@ -480,7 +480,7 @@ def _build_qb_karam_conditions(
 
     if joined_voucher_conditions:
         conditions.append(Criterion.any(joined_voucher_conditions))
-    elif filters.get("karam_series") or filters.get("translation"):
+    elif _has_voucher_filters(filters):
         conditions.append(_voucher_pair_condition(gl, voucher_data))
 
     return conditions
@@ -647,42 +647,7 @@ def _build_voucher_conditions(filters: dict[str, Any]) -> list[str]:
     if filters.get("against_voucher_no"):
         conditions.append("gl.against_voucher=%(against_voucher_no)s")
     if filters.get("ignore_err") or filters.get("ignore_cr_dr_notes"):
-        excluded = list(filters.get("voucher_no_not_in") or [])
-        if filters.get("ignore_err"):
-            excluded.extend(
-                row[0]
-                for row in frappe.get_all(
-                    "Journal Entry",
-                    filters={
-                        "company": filters.get("company"),
-                        "docstatus": 1,
-                        "voucher_type": (
-                            "in",
-                            ["Exchange Rate Revaluation", "Exchange Gain Or Loss"],
-                        ),
-                    },
-                    fields=["name"],
-                    as_list=True,
-                    limit_page_length=_MAX_LOOKUP_VALUES,
-                )
-            )
-        if filters.get("ignore_cr_dr_notes"):
-            excluded.extend(
-                row[0]
-                for row in frappe.get_all(
-                    "Journal Entry",
-                    filters={
-                        "company": filters.get("company"),
-                        "docstatus": 1,
-                        "voucher_type": ("in", ["Credit Note", "Debit Note"]),
-                        "is_system_generated": 1,
-                    },
-                    fields=["name"],
-                    as_list=True,
-                    limit_page_length=_MAX_LOOKUP_VALUES,
-                )
-            )
-        filters["voucher_no_not_in"] = list(dict.fromkeys(excluded))
+        _populate_excluded_vouchers(filters)
     if filters.get("voucher_no_not_in"):
         conditions.append("gl.voucher_no not in %(voucher_no_not_in)s")
     return conditions
@@ -834,7 +799,7 @@ def get_flat_account_currency_openings(
     account = frappe.qb.DocType("Account")
     currency = _account_currency_expression(gl)
     voucher_data = None
-    if opening_filters.get("karam_series") or opening_filters.get("translation"):
+    if _has_voucher_filters(opening_filters):
         voucher_data = _get_voucher_data_for_filters(opening_filters)
     criteria = _build_qb_conditions(opening_filters, gl, voucher_data)
     if match_conditions := build_match_conditions("Reporting Currency GLE"):
@@ -858,11 +823,15 @@ def get_flat_account_currency_openings(
         .groupby(gl.account, currency, gl.manual_entry, gl.reporting_doe)
         .run(as_dict=True)
     )
-    return {
-        (row.account, row.account_currency): decimal_amount(row.opening_balance)
-        for row in rows
-        if row.account
-    }
+    opening_balances: dict[tuple[str | None, str | None], Any] = {}
+    for row in rows:
+        if not row.account:
+            continue
+        key = (row.account, row.account_currency)
+        opening_balances[key] = opening_balances.get(key, decimal_amount(0)) + (
+            decimal_amount(row.opening_balance)
+        )
+    return opening_balances
 
 
 def _prepare_currency_values(
@@ -870,36 +839,36 @@ def _prepare_currency_values(
 ) -> None:
     """Preserve company amounts before conversion and flag unresolved account currency."""
     for gl_entry in gl_entries:
-        for field in (
-            "debit",
-            "credit",
-            "debit_in_account_currency",
-            "credit_in_account_currency",
-            "debit_in_company_currency",
-            "credit_in_company_currency",
-            "debit_in_transaction_currency",
-            "credit_in_transaction_currency",
-        ):
-            if field in gl_entry:
-                gl_entry[field] = decimal_amount(gl_entry[field])
-        gl_entry["entry_type"] = (
-            "Reporting DOE"
-            if gl_entry.get("reporting_doe")
-            else "Manual"
-            if gl_entry.get("manual_entry")
-            else "Synced GL"
+        _prepare_currency_entry(gl_entry, party_name_map)
+
+
+def _prepare_currency_entry(
+    gl_entry: frappe._dict[str, Any], party_name_map: dict[str, Any]
+) -> None:
+    for field in (
+        "debit",
+        "credit",
+        "debit_in_account_currency",
+        "credit_in_account_currency",
+        "debit_in_company_currency",
+        "credit_in_company_currency",
+        "debit_in_transaction_currency",
+        "credit_in_transaction_currency",
+    ):
+        if field in gl_entry:
+            gl_entry[field] = decimal_amount(gl_entry[field])
+    gl_entry["entry_type"] = _entry_type_label(gl_entry)
+    _set_conversion_context(gl_entry)
+    if not cstr(gl_entry.get("account_currency")).strip() and (
+        flt(gl_entry.get("debit_in_account_currency"))
+        or flt(gl_entry.get("credit_in_account_currency"))
+        or gl_entry.get("_account_currency_contribution")
+    ):
+        gl_entry["_mixed_account_currency"] = 1
+    if party_name_map and gl_entry.party_type and gl_entry.party:
+        gl_entry.party_name = party_name_map.get(gl_entry.party_type, {}).get(
+            gl_entry.party
         )
-        _set_conversion_context(gl_entry)
-        if not cstr(gl_entry.get("account_currency")).strip() and (
-            flt(gl_entry.get("debit_in_account_currency"))
-            or flt(gl_entry.get("credit_in_account_currency"))
-            or gl_entry.get("_account_currency_contribution")
-        ):
-            gl_entry["_mixed_account_currency"] = 1
-        if party_name_map and gl_entry.party_type and gl_entry.party:
-            gl_entry.party_name = party_name_map.get(gl_entry.party_type, {}).get(
-                gl_entry.party
-            )
 
 
 def _voucher_pair_condition(
@@ -935,3 +904,54 @@ def _set_conversion_context(gl_entry: Any) -> None:
         gl_entry["conversion_basis"] = (
             "Company amount multiplied by stored effective rate"
         )
+
+
+def _populate_excluded_vouchers(filters: dict[str, Any]) -> None:
+    excluded = list(filters.get("voucher_no_not_in") or [])
+    if filters.get("ignore_err"):
+        excluded.extend(
+            row[0]
+            for row in frappe.get_all(
+                "Journal Entry",
+                filters={
+                    "company": filters.get("company"),
+                    "docstatus": 1,
+                    "voucher_type": (
+                        "in",
+                        ["Exchange Rate Revaluation", "Exchange Gain Or Loss"],
+                    ),
+                },
+                fields=["name"],
+                as_list=True,
+                limit_page_length=_MAX_LOOKUP_VALUES,
+            )
+        )
+    if filters.get("ignore_cr_dr_notes"):
+        excluded.extend(
+            row[0]
+            for row in frappe.get_all(
+                "Journal Entry",
+                filters={
+                    "company": filters.get("company"),
+                    "docstatus": 1,
+                    "voucher_type": ("in", ["Credit Note", "Debit Note"]),
+                    "is_system_generated": 1,
+                },
+                fields=["name"],
+                as_list=True,
+                limit_page_length=_MAX_LOOKUP_VALUES,
+            )
+        )
+    filters["voucher_no_not_in"] = list(dict.fromkeys(excluded))
+
+
+def _has_voucher_filters(filters: dict[str, Any]) -> bool:
+    return bool(filters.get("karam_series") or filters.get("translation"))
+
+
+def _entry_type_label(gl_entry: frappe._dict[str, Any]) -> str:
+    if gl_entry.get("reporting_doe"):
+        return "Reporting DOE"
+    if gl_entry.get("manual_entry"):
+        return "Manual"
+    return "Synced GL"

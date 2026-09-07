@@ -1,7 +1,8 @@
 """Tests for party-wise DOE grouping."""
 
-from typing import Any
-from unittest.mock import patch
+from typing import Any, override
+from unittest import TestCase
+from unittest.mock import Mock, patch
 
 from frappe import _dict
 from frappe.tests.utils import FrappeTestCase
@@ -42,6 +43,7 @@ class TestPartyWiseDoe(FrappeTestCase):
         assert len(first_records) == 2
         assert all(record["party"] == "CUST-A" for record in first_records)
         assert all(record["party_type"] == "Customer" for record in first_records)
+        assert all(record["is_opening"] == "No" for record in first_records)
         assert prior_doe_by_group[("Trade Debtors", "LBP", "Customer", "CUST-A")] == {
             "reporting_debit": 10.0,
             "reporting_credit": 0.0,
@@ -103,6 +105,7 @@ class TestPartyWiseDoe(FrappeTestCase):
 
         assert all(row["party_type"] == "Customer" for row in inserted_rows)
         assert all(row["party"] == "CUST-A" for row in inserted_rows)
+        assert all(row["is_opening"] == "No" for row in inserted_rows)
 
 
 _DOE_ARGUMENTS: dict[str, Any] = {
@@ -130,3 +133,107 @@ def _party_group(party: str) -> _dict[str, Any]:
         total_reporting_debit=90.0,
         total_reporting_credit=0.0,
     )
+
+
+class TestDoeWorkflow(TestCase):
+    """Both entry points retain sorted cumulative processing and transaction ownership."""
+
+    @override  # noqa: V105 - unittest lifecycle callback.
+    def setUp(self) -> None:
+        self.frappe_mock = Mock()
+        settings = self.frappe_mock.get_single.return_value
+        settings.reporting_currency = "USD"
+        settings.rc_parameters = [
+            _dict(
+                idx=2,
+                doe_posting_date="2025-12-31",
+                exchange_rate=166,
+                profit_account="DOE Profit",
+                loss_account="DOE Loss",
+            ),
+            _dict(
+                idx=1,
+                doe_posting_date="2025-06-30",
+                exchange_rate=83,
+                profit_account="DOE Profit",
+                loss_account="DOE Loss",
+            ),
+        ]
+        self.frappe_mock.db.count.return_value = 1
+        excluded_accounts: list[str] = []
+        self.frappe_mock.db.sql_list.return_value = excluded_accounts
+        self.frappe_mock.db.get_value.return_value = "1100"
+        self.enterContext(patch.object(doe, "frappe", self.frappe_mock))
+        self.enterContext(
+            patch.object(doe, "get_reporting_company", return_value="Karam")
+        )
+        self.enterContext(patch.object(doe, "_publish_progress"))
+        self.enterContext(
+            patch("erpnext.accounts.utils.get_fiscal_year", return_value=("2025",))
+        )
+        self.enterContext(
+            patch.object(
+                doe,
+                "_get_profit_loss_currency_map",
+                return_value={"DOE Profit": "USD", "DOE Loss": "USD"},
+            )
+        )
+        self.enterContext(
+            patch.object(
+                doe,
+                "_get_starting_doe_number",
+                return_value={"year": 2025, "counter": 1},
+            )
+        )
+        self.enterContext(
+            patch.object(
+                doe, "_get_accounts_with_totals", return_value=[_party_group("CUST-A")]
+            )
+        )
+        self.insert = self.enterContext(patch.object(doe, "_bulk_insert_doe_records"))
+
+    def test_inline_preserves_sorted_cumulative_rows_without_commit(self) -> None:
+        result = doe.compute_doe_inline()
+        self._assert_cumulative_rows(result)
+        self.frappe_mock.db.savepoint.assert_called_once_with("inline_doe_compute")
+        self.frappe_mock.db.commit.assert_not_called()
+        self.frappe_mock.get_single.return_value.db_set.assert_not_called()
+
+    def test_background_preserves_rows_and_completion_commit(self) -> None:
+        result = doe._compute_doe_background()
+        self._assert_cumulative_rows(result)
+        assert self.frappe_mock.db.commit.call_count == 2
+        self.frappe_mock.get_single.return_value.db_set.assert_called_once()
+        assert (
+            self.frappe_mock.get_single.return_value.db_set.call_args.args[0]
+            == "last_sync_timestamp"
+        )
+
+    def test_inline_insertion_failure_rolls_back_to_its_savepoint(self) -> None:
+        self.insert.side_effect = RuntimeError("simulated insertion failure")
+        with self.assertRaisesRegex(RuntimeError, "simulated insertion failure"):
+            doe.compute_doe_inline()
+        self.frappe_mock.db.rollback.assert_called_once_with(
+            save_point="inline_doe_compute"
+        )
+        self.frappe_mock.db.commit.assert_not_called()
+
+    def _assert_cumulative_rows(self, result: dict[str, Any]) -> None:
+        assert result["accounts_processed"] == 2
+        assert result["records_created"] == 4
+        self.insert.assert_called_once()
+        rows = self.insert.call_args.args[0]
+        assert [row["posting_date"] for row in rows] == ["2025-06-30"] * 2 + [
+            "2025-12-31"
+        ] * 2
+        assert [row["name"] for row in rows] == [
+            f"KE-RCDOE-GLE-2025-{number:05d}" for number in range(1, 5)
+        ]
+        assert rows[0]["reporting_debit"] == 10
+        assert rows[2]["reporting_credit"] == 50
+        assert all(row["party"] == "CUST-A" for row in rows)
+        assert (
+            sum(row["reporting_debit"] - row["reporting_credit"] for row in rows) == 0
+        )
+        self.frappe_mock.db.sql.assert_called_once()
+        assert "DELETE" in self.frappe_mock.db.sql.call_args.args[0]

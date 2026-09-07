@@ -57,7 +57,7 @@ _SQL_RESERVED = frozenset(
 )
 
 
-def validate_sql_identifier(value: str, context: str = "identifier") -> str:
+def validate_sql_identifier(value: object, context: str = "identifier") -> str:
     """Validate that a string is a safe SQL identifier.
 
     Args:
@@ -105,7 +105,7 @@ def validate_sql_identifiers(
     return [validate_sql_identifier(v, context) for v in values]
 
 
-def safe_column_list(columns: Iterable[str], table_alias: str = "") -> str:
+def safe_column_list(columns: Iterable[str], table_alias: str = "") -> str:  # noqa: V103 - retained public SQL safety helper.
     """Build a safe comma-separated column list for SELECT clauses.
 
     Args:
@@ -128,7 +128,7 @@ def safe_column_list(columns: Iterable[str], table_alias: str = "") -> str:
     return ", ".join(validated)
 
 
-def safe_int(value: int | str | None, default: int = 0) -> int:
+def safe_int(value: int | str | None, default: int = 0) -> int:  # noqa: V103 - retained public SQL safety helper.
     """Safely convert a value to integer for SQL interpolation.
 
     Args:
@@ -147,7 +147,7 @@ def safe_int(value: int | str | None, default: int = 0) -> int:
 
     try:
         result = int(value)
-    except (ValueError, TypeError):
+    except ValueError, TypeError:
         return default
     else:
         return default if result < 0 else result

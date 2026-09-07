@@ -7,6 +7,8 @@ reporting currency.
 
 from __future__ import annotations
 
+from collections.abc import Iterator
+from itertools import chain
 from typing import Any
 
 import frappe
@@ -15,7 +17,7 @@ from erpnext.accounts.report.general_ledger.general_ledger import (
 )
 from frappe.utils import cint, flt
 
-from .tbfpr_constants import DOCTYPE_RC_SETTINGS
+from .tbfpr_constants import DOCTYPE_RC_GLE, DOCTYPE_RC_SETTINGS
 from .tbfpr_filters import get_party_name_field
 from .tbfpr_query import get_reporting_currency_balances
 from .tbfpr_rows import (
@@ -30,17 +32,9 @@ def get_data(filters: Any, show_party_name: Any) -> list[dict[str, Any]]:
     reporting_currency = _get_reporting_currency(filters)
 
     party_name_field = get_party_name_field(filters)
-    party_filters: dict[str, Any] = (
-        {"name": filters.get("party")} if filters.get("party") else {}
-    )
-    parties = frappe.get_all(
-        filters.party_type,
-        fields=["name", party_name_field],
-        filters=party_filters,
-        order_by="name",
-    )
-
-    if not parties:
+    parties = _iter_permitted_parties(filters, party_name_field)
+    first_party = next(parties, None)
+    if first_party is None:
         return []
 
     account_filter: list[str] | None = []
@@ -52,7 +46,7 @@ def get_data(filters: Any, show_party_name: Any) -> list[dict[str, Any]]:
     data: list[dict[str, Any]] = []
     total_row = frappe._dict(dict.fromkeys(TOTAL_FIELDS, 0.0))
 
-    for party in parties:
+    for party in chain((first_party,), parties):
         party_name = party.get("name")
         balances = party_balances.get(party_name, {})
 
@@ -81,20 +75,36 @@ def get_data(filters: Any, show_party_name: Any) -> list[dict[str, Any]]:
         if show_party_name:
             row["party_name"] = party.get(party_name_field)
 
-        has_value = (
-            opening_debit
-            or opening_credit
-            or debit
-            or credit
-            or closing_debit
-            or closing_credit
+        _append_party_if_visible(
+            data, total_row, row, show_zero_values=cint(filters.show_zero_values)
         )
-        if cint(filters.show_zero_values) or has_value:
-            data.append(row)
-            for field in TOTAL_FIELDS:
-                total_row[field] += row[field]
 
     return _append_totals(data, reporting_currency, total_row)
+
+
+PARTY_PAGE_SIZE = 500
+
+
+def _iter_permitted_parties(filters: Any, party_name_field: str) -> Iterator[Any]:
+    """Read permitted parties in stable name order without retaining every master row."""
+    party_filters: dict[str, Any] = (
+        {"name": filters.get("party")} if filters.get("party") else {}
+    )
+    while True:
+        # Permission-aware keyset pagination: one bounded page, not one read per party.
+        # nosemgrep: frappe-n-plus-one-read-in-loop
+        page = frappe.get_list(
+            filters.party_type,
+            fields=["name", party_name_field],
+            filters=dict(party_filters),
+            order_by="name asc",
+            limit_page_length=PARTY_PAGE_SIZE,
+            reference_doctype=DOCTYPE_RC_GLE,
+        )
+        yield from page
+        if len(page) < PARTY_PAGE_SIZE or filters.get("party"):
+            return
+        party_filters["name"] = [">", page[-1]["name"]]
 
 
 def _append_totals(
@@ -124,3 +134,16 @@ def _get_reporting_currency(filters: Any) -> Any:
         )
 
     return reporting_currency
+
+
+def _append_party_if_visible(
+    data: list[dict[str, Any]],
+    total_row: dict[str, Any],
+    row: dict[str, Any],
+    *,
+    show_zero_values: int,
+) -> None:
+    if show_zero_values or any(row[field] for field in TOTAL_FIELDS):
+        data.append(row)
+        for field in TOTAL_FIELDS:
+            total_row[field] += row[field]

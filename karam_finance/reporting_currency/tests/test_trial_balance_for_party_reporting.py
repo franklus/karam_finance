@@ -76,7 +76,7 @@ class TestTrialBalanceForPartyReporting(FrappeTestCase):
             ),
             patch.object(
                 data_module.frappe,
-                "get_all",
+                "get_list",
                 return_value=[{"name": "CUST-001", "customer_name": "Customer 1"}],
             ),
             patch.object(
@@ -118,7 +118,7 @@ class TestTrialBalanceForPartyReporting(FrappeTestCase):
             ),
             patch.object(
                 data_module.frappe,
-                "get_all",
+                "get_list",
                 return_value=[{"name": "CUST-001", "customer_name": "Customer 1"}],
             ),
             patch.object(
@@ -160,7 +160,7 @@ class TestTrialBalanceForPartyReporting(FrappeTestCase):
             ),
             patch.object(
                 data_module.frappe,
-                "get_all",
+                "get_list",
                 return_value=[
                     {"name": "CUST-001", "customer_name": "Customer 1"},
                     {"name": "CUST-002", "customer_name": "Customer 2"},
@@ -202,7 +202,7 @@ class TestTrialBalanceForPartyReporting(FrappeTestCase):
             ),
             patch.object(
                 data_module.frappe,
-                "get_all",
+                "get_list",
                 return_value=[{"name": "CUST-001", "customer_name": ""}],
             ),
             patch.object(
@@ -250,7 +250,7 @@ class TestTrialBalanceForPartyReporting(FrappeTestCase):
             ),
             patch.object(
                 data_module.frappe,
-                "get_all",
+                "get_list",
                 return_value=[
                     {"name": "CUST-001", "customer_name": "Customer 1"},
                     {"name": "CUST-002", "customer_name": "Customer 2"},
@@ -270,8 +270,51 @@ class TestTrialBalanceForPartyReporting(FrappeTestCase):
         assert total_row["opening_credit"] == 0.0
         assert total_row["debit"] == 5.0
         assert total_row["credit"] == 6.0
-        assert total_row["closing_debit"] == 12.0
-        assert total_row["closing_credit"] == 0.0
+        assert total_row["closing_debit"] == 13.0
+        assert total_row["closing_credit"] == 1.0
+
+    def test_totals_keep_closing_sides_independent_across_parties(self) -> None:
+        """One party's closing credit must not net another party's debit."""
+        module = _load_module()
+        filters = _dict(
+            party_type="Customer",
+            party=None,
+            account=None,
+            company="Karam",
+            show_zero_values=0,
+        )
+
+        data_module = importlib.import_module(
+            MODULE_NAME.rsplit(".", 1)[0] + ".tbfpr_data"
+        )
+        with (
+            patch.object(
+                data_module,
+                "get_reporting_currency_balances",
+                return_value={
+                    "CUST-A": {"opening_debit": 100.0, "opening_credit": 0.0},
+                    "CUST-B": {"opening_debit": 0.0, "opening_credit": 100.0},
+                },
+            ),
+            patch.object(
+                data_module.frappe,
+                "get_list",
+                return_value=[
+                    {"name": "CUST-A", "customer_name": "Party A"},
+                    {"name": "CUST-B", "customer_name": "Party B"},
+                ],
+            ),
+            patch.object(
+                data_module.frappe.db,
+                "get_single_value",
+                return_value="USD",
+            ),
+        ):
+            data = module.get_data(filters, show_party_name=True)
+
+        total_row = data[-1]
+        assert total_row["closing_debit"] == 100.0
+        assert total_row["closing_credit"] == 100.0
 
     def test_no_parties_returns_empty_list(self) -> None:
         """No party master records should return no report rows."""
@@ -295,7 +338,7 @@ class TestTrialBalanceForPartyReporting(FrappeTestCase):
             ),
             patch.object(
                 data_module.frappe,
-                "get_all",
+                "get_list",
                 return_value=[],
             ),
             patch.object(
@@ -307,3 +350,56 @@ class TestTrialBalanceForPartyReporting(FrappeTestCase):
             data = module.get_data(filters, show_party_name=True)
 
         assert data == []
+
+    def test_party_master_pages_preserve_permissions_and_totals(self) -> None:
+        """Large permitted party sets must not be truncated to the first page."""
+        module = _load_module()
+        filters = _dict(
+            party_type="Customer",
+            party=None,
+            account=None,
+            company="Karam",
+            show_zero_values=1,
+        )
+
+        data_module = importlib.import_module(
+            MODULE_NAME.rsplit(".", 1)[0] + ".tbfpr_data"
+        )
+        parties = [
+            {"name": f"CUST-{index:03d}", "customer_name": f"Customer {index}"}
+            for index in range(21)
+        ]
+        with (
+            patch.object(data_module, "PARTY_PAGE_SIZE", 10),
+            patch.object(
+                data_module,
+                "get_reporting_currency_balances",
+                return_value={party["name"]: {"debit": 1} for party in parties},
+            ),
+            patch.object(
+                data_module.frappe,
+                "get_list",
+                side_effect=[parties[:10], parties[10:20], parties[20:]],
+            ) as get_list,
+            patch.object(
+                data_module.frappe.db,
+                "get_single_value",
+                return_value="USD",
+            ),
+        ):
+            data = module.get_data(filters, show_party_name=True)
+
+        assert len([row for row in data if row.get("party")]) == 22
+        assert data[-1]["debit"] == 21
+        assert get_list.call_count == 3
+        assert [call.kwargs["filters"] for call in get_list.call_args_list] == [
+            {},
+            {"name": [">", "CUST-009"]},
+            {"name": [">", "CUST-019"]},
+        ]
+        assert all(
+            call.kwargs["limit_page_length"] == 10 for call in get_list.call_args_list
+        )
+        assert (
+            get_list.call_args.kwargs["reference_doctype"] == "Reporting Currency GLE"
+        )

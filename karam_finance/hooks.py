@@ -7,12 +7,12 @@ from karam_finance.karam_series.constants.constants import (
 type DocEventValue = str | list[str]
 type DocEvent = dict[str, DocEventValue]
 
-app_name = "karam_finance"
-app_title = "Karam Finance"
-app_publisher = "Noospheric"
-app_description = "Karam-specific finance, reconciliation, reporting, numbering, and operational controls for ERPNext."
-app_email = "repast_pesos42@icloud.com"
-app_license = "mit"
+app_name = "karam_finance"  # noqa: V107 - Frappe app metadata loader.
+app_title = "Karam Finance"  # noqa: V107 - Frappe app metadata loader.
+app_publisher = "Noospheric"  # noqa: V107 - Frappe app metadata loader.
+app_description = "Karam-specific finance, reconciliation, reporting, numbering, and operational controls for ERPNext."  # noqa: V107 - Frappe app metadata loader.
+app_email = "repast_pesos42@icloud.com"  # noqa: V107 - Frappe app metadata loader.
+app_license = "mit"  # noqa: V107 - Frappe app metadata loader.
 app_include_js = [
     "currency_formatter.bundle.js",
     "report_table_ux.bundle.js",
@@ -22,7 +22,9 @@ app_include_js = [
 ]
 
 # DocType class overrides
-override_doctype_class = {
+# Preserve the installed Bank Clearance subclass contract; it delegates to super().
+# nosemgrep: override-doctype-class
+override_doctype_class = {  # noqa: V107 - Frappe controller override loader.
     "Bank Clearance": "karam_finance.overrides.bank_clearance.KaramBankClearance",
 }
 
@@ -34,7 +36,7 @@ doctype_js["Bank Clearance"] = "public/js/overrides/bank_clearance.js"
 doctype_js["Stock Settings"] = (
     "public/js/karam_general/stock_settings_item_price_mismatch.js"
 )
-doctype_list_js = {
+doctype_list_js = {  # noqa: V107 - Frappe list-view asset loader.
     "Reporting Currency GLE": (
         "public/js/reporting_currency/reporting_currency_gle_list.js"
     ),
@@ -46,11 +48,11 @@ after_install = "karam_finance.migrate.after_install"
 
 # Migrate hooks
 # Widen columns BEFORE schema sync to prevent truncation errors on existing data
-before_migrate = "karam_finance.common.db_schema.ensure_currency_columns_capacity"
+before_migrate = "karam_finance.common.db_schema.ensure_currency_columns_capacity"  # noqa: V107 - Frappe migration hook loader.
 after_migrate = "karam_finance.migrate.after_migrate"
 
 # Ensure currency columns remain widened whenever DocTypes are updated
-after_doctype_update = [
+after_doctype_update = [  # noqa: V107 - Frappe schema hook loader.
     "karam_finance.common.db_schema.ensure_currency_columns_capacity"
 ]
 
@@ -113,6 +115,6 @@ doc_events.setdefault("Journal Entry", {}).update(
 
 # Top-level hook for ERPNext's rename_temporarily_named_docs() scheduled job.
 # This fires on_gle_rename (not the doc_event after_rename) so both paths are covered.
-on_gle_rename = [
+on_gle_rename = [  # noqa: V107 - ERPNext temporary GL-name scheduler hook.
     "karam_finance.reporting_currency.doctype.reporting_currency_gle.sync.orchestrator.on_gle_rename_hook"
 ]

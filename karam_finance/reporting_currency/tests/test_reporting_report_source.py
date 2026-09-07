@@ -17,7 +17,7 @@ def unchanged_query(query: Any, *_args: Any, **_kwargs: Any) -> Any:
 
 
 class TestReportingReportSource(TestCase):
-    @override
+    @override  # noqa: V105 - unittest and Frappe test lifecycle callback.
     def setUp(self) -> None:
         self.connection = sqlite3.connect(":memory:")
         self.addCleanup(self.connection.close)

@@ -8,6 +8,7 @@ needs it.
 """
 
 from collections import defaultdict
+from collections.abc import Iterator
 from typing import Any, TypedDict, Unpack, cast
 
 import frappe
@@ -30,8 +31,8 @@ class LedgerFilters(TypedDict):
     company: str
     finance_book: object
     include_default_fb: bool
-    project_filters: object
-    restrict_cost_centers: list[str] | None
+    project_filters: object  # noqa: V107 - TypedDict key accessed through mapping subscription.
+    restrict_cost_centers: list[str] | None  # noqa: V107 - TypedDict key accessed through mapping subscription.
 
 
 ROOT_TYPES = ("Income", "Expense")
@@ -128,16 +129,42 @@ def get_report_amounts(
         needs_account_currency=needs_account_currency,
     )
 
+    currency_info, use_account_currency = _amount_currency_context(
+        rows,
+        periods,
+        presentation_currency,
+        company=ledger_filters["company"],
+        show_amount_in_company_currency=show_amount_in_company_currency,
+    )
+    return _aggregate_amount_rows(
+        rows,
+        periods,
+        currency_info=currency_info,
+        use_account_currency=use_account_currency,
+    )
+
+
+def _amount_currency_context(
+    rows: list[dict[str, Any]],
+    periods: list[Any],
+    presentation_currency: str | None,
+    *,
+    company: str,
+    show_amount_in_company_currency: bool,
+) -> tuple[dict[str, Any] | None, bool]:
     currency_info = None
     if presentation_currency:
         currency_info = get_currency(
             frappe._dict(
-                company=ledger_filters["company"],
+                company=company,
                 presentation_currency=presentation_currency,
                 period_end_date=periods[-1].to_date,
             )
         )
 
+    needs_account_currency = bool(
+        presentation_currency and not show_amount_in_company_currency
+    )
     account_currencies = (
         {str(row.get("account_currency") or "") for row in rows}
         if needs_account_currency
@@ -150,6 +177,16 @@ def get_report_amounts(
         and next(iter(account_currencies), None) == presentation_currency
     )
 
+    return currency_info, use_account_currency
+
+
+def _aggregate_amount_rows(
+    rows: list[dict[str, Any]],
+    periods: list[Any],
+    *,
+    currency_info: dict[str, Any] | None,
+    use_account_currency: bool,
+) -> tuple[dict[str, dict[str, float]], dict[str, list[float]]]:
     cost_centre_amounts: dict[str, dict[str, float]] = defaultdict(
         lambda: defaultdict(float)
     )
@@ -158,17 +195,9 @@ def get_report_amounts(
     }
     period_indexes = {str(period.key): index for index, period in enumerate(periods)}
 
-    for row in rows:
-        root_type = str(row.get("root_type") or "")
-        if root_type not in ROOT_TYPES:
-            continue
-
-        cost_center = str(row.get("cost_center") or "")
-        period_key = str(row.get("period_key") or "")
-        period_index = period_indexes.get(period_key)
-        if period_index is None:
-            continue
-
+    for row, root_type, cost_center, period_key, period_index in _period_amount_rows(
+        rows, period_indexes
+    ):
         base_value = float(row.get("base_amount") or 0.0)
         account_value = float(row.get("account_amount") or 0.0)
         value = _convert_amount(
@@ -183,9 +212,7 @@ def get_report_amounts(
         positive_root_value = -value if root_type == "Income" else value
         totals[root_type][period_index] += positive_root_value
         if cost_center:
-            cost_centre_amounts[cost_center][period_key] += (
-                positive_root_value if root_type == "Income" else -positive_root_value
-            )
+            cost_centre_amounts[cost_center][period_key] += -value
 
     return (
         {name: dict(values) for name, values in cost_centre_amounts.items()},
@@ -394,3 +421,25 @@ def get_total_by_root_type(
         restrict_cost_centers=ledger_filters["restrict_cost_centers"],
     )
     return totals[root_type][0] if totals[root_type] else 0.0
+
+
+def _amount_period(
+    root_type: str, period_key: str, period_indexes: dict[str, int]
+) -> int | None:
+    if root_type not in ROOT_TYPES:
+        return None
+    return period_indexes.get(period_key)
+
+
+def _period_amount_rows(
+    rows: list[dict[str, Any]], period_indexes: dict[str, int]
+) -> Iterator[tuple[dict[str, Any], str, str, str, int]]:
+    for row in rows:
+        root_type = str(row.get("root_type") or "")
+        cost_center = str(row.get("cost_center") or "")
+        period_key = str(row.get("period_key") or "")
+        period_index = _amount_period(root_type, period_key, period_indexes)
+        if period_index is None:
+            continue
+
+        yield row, root_type, cost_center, period_key, period_index

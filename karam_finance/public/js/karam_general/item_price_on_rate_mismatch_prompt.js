@@ -45,38 +45,45 @@
     return applyRowPricing(frm, cdt, cdn, rate);
   }
 
-  const getErrorText = (error) =>
-    Object.values({
-      message: error?.message,
-      exception: error?.exception,
-      exc: error?.exc,
-      serverMessages: error?._server_messages,
-      responseMessages: error?.responseJSON?._server_messages,
-      responseException: error?.responseJSON?.exception,
-      responseExc: error?.responseJSON?.exc,
-      responseText: error?.responseText
-    })
-      .filter(Boolean)
-      .join(" ");
+  function getErrorText(error) {
+    const values = ["message", "exception", "exc", "_server_messages"].map(
+      (key) => error?.[key]
+    );
+    const response = error?.responseJSON;
+    values.push(
+      ...["_server_messages", "exception", "exc"].map((key) => response?.[key])
+    );
+    values.push(error?.responseText);
+    return values.filter(Boolean).join(" ");
+  }
 
   const isDuplicateValidFromError = (error) =>
     getErrorText(error).includes("with the same Valid From date");
 
   function runAfterMessageDialogDismissal(callback, attempt = 0) {
     const dialog = frappe.msg_dialog;
-    if (!dialog && attempt < 5)
+    if (!dialog && attempt < 5) {
       return window.setTimeout(
         () => runAfterMessageDialogDismissal(callback, attempt + 1),
         0
       );
-    if (!dialog || dialog.$wrapper?.is?.(":visible") === false)
+    }
+    if (isHiddenDialog(dialog)) {
       return window.setTimeout(callback, 0);
+    }
     const previousOnhide = dialog.custom_onhide;
     dialog.custom_onhide = () => {
-      if (typeof previousOnhide === "function") previousOnhide();
+      if (typeof previousOnhide === "function") {
+        previousOnhide();
+      }
       dialog.custom_onhide = previousOnhide;
       callback();
     };
+    return undefined;
+  }
+
+  function isHiddenDialog(dialog) {
+    return !dialog || dialog.$wrapper?.is?.(":visible") === false;
   }
 
   function getItemPriceRequest(frm, row, priceList) {
@@ -117,14 +124,10 @@
   }
 
   function showItemPriceSuccessAlert(frm, result, rate) {
-    const action = result.created
-      ? "created"
-      : result.updated
-        ? "updated"
-        : result.reused
-          ? "used"
-          : null;
-    if (!action) return;
+    const action = getSuccessAction(result);
+    if (!action) {
+      return;
+    }
     const messages = {
       created: __("Item Price created for rate {0}."),
       updated: __("Item Price updated for rate {0}."),
@@ -136,12 +139,28 @@
     });
   }
 
+  function getSuccessAction(result) {
+    if (result.created) {
+      return "created";
+    }
+    if (result.updated) {
+      return "updated";
+    }
+    return result.reused ? "used" : null;
+  }
+
+  function getPartyFields(frm) {
+    if (frm.doc.supplier) {
+      return ["Supplier", frm.doc.supplier, frm.doc.supplier_name];
+    }
+    if (frm.doc.customer) {
+      return ["Customer", frm.doc.customer, frm.doc.customer_name];
+    }
+    return ["Party"];
+  }
+
   function getPartyDetails(frm) {
-    const party = frm.doc.supplier
-      ? ["Supplier", frm.doc.supplier, frm.doc.supplier_name]
-      : frm.doc.customer
-        ? ["Customer", frm.doc.customer, frm.doc.customer_name]
-        : ["Party"];
+    const party = getPartyFields(frm);
     return {
       label: __(party[0]),
       value: party.slice(1).filter(Boolean).join(": ") || __("Not set")

@@ -188,7 +188,7 @@ def sync_doctype_list() -> None:
     settings.save()
 
 
-@frappe.whitelist()  # nosemgrep: frappe-missing-permission-check
+@frappe.whitelist()  # nosemgrep: frappe-missing-permission-check  # noqa: V103 - whitelisted method called by Settings client JS.
 def populate_doctype_list() -> None:
     """Public action to sync doctypes from the UI button.
 
@@ -238,7 +238,7 @@ def update_field_mandatory_status(
 
         row.karam_series_mandatory = 1 if mandatory_value else 0
         settings.save()
-    except Exception:
+    except Exception:  # noqa: BLE001 - compatibility API returns failure after logging any save error.
         frappe.log_error(frappe.get_traceback(), "Update Field Mandatory Status Error")
         return {
             "success": False,

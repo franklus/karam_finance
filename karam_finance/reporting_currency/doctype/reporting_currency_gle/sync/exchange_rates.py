@@ -7,10 +7,14 @@ and temporal coverage validation.
 from __future__ import annotations
 
 import bisect
-from typing import TYPE_CHECKING, Any
+from operator import itemgetter
+from typing import TYPE_CHECKING, Any, cast
 
 if TYPE_CHECKING:
     from datetime import date
+
+    # RedisWrapper is referenced by the quoted runtime-safe cast.
+    from frappe.utils.redis_wrapper import RedisWrapper  # noqa: V104
 
 import frappe
 from frappe import _
@@ -108,7 +112,7 @@ def build_exchange_rate_timeline(
                 )
 
     # Sort combined timeline by date (no ambiguity now - max one rate per date)
-    timeline.sort(key=lambda x: x["date"])
+    timeline.sort(key=itemgetter("date"))
 
     return timeline
 
@@ -118,7 +122,7 @@ def build_exchange_rate_timeline(
 # ============================================================================
 
 
-def get_applicable_rate(
+def get_applicable_rate(  # noqa: PLR0913, PLR0917 - retain the sync lookup compatibility signature.
     posting_date: str | date,
     default_currency: str,
     reporting_currency: str,
@@ -149,10 +153,10 @@ def get_applicable_rate(
         if cached:
             posting_date_obj = cached
         else:
-            posting_date_obj = getdate(posting_date)
+            posting_date_obj = _required_rate_date(posting_date)
             date_cache[posting_date] = posting_date_obj
     elif isinstance(posting_date, str):
-        posting_date_obj = getdate(posting_date)
+        posting_date_obj = _required_rate_date(posting_date)
     else:
         posting_date_obj = posting_date
 
@@ -187,7 +191,7 @@ def get_applicable_rate(
 # ============================================================================
 
 
-def validate_temporal_coverage(
+def validate_temporal_coverage(  # noqa: PLR0917 - exported Frappe sync compatibility entrypoint.
     gl_entries: list[dict[str, Any]],
     rate_timeline: list[dict[str, Any]],
     default_currency: str,
@@ -203,7 +207,7 @@ def validate_temporal_coverage(
         return  # No timeline means no conversion needed
 
     earliest_ce_date = rate_timeline[0]["date"]
-    entries_before_ce = []
+    entries_before_ce: list[dict[str, Any]] = []
 
     # Check all GL entries that need conversion
     for gle in gl_entries:
@@ -213,7 +217,7 @@ def validate_temporal_coverage(
         if account_currency == reporting_currency:
             continue
 
-        posting_date = getdate(gle.get("posting_date"))
+        posting_date = _required_rate_date(gle.get("posting_date"))
 
         # Check if posting_date precedes earliest CE date
         if posting_date < earliest_ce_date:
@@ -228,109 +232,124 @@ def validate_temporal_coverage(
 
     # If any entries precede CE records, raise detailed error
     if entries_before_ce:
-        # Sort by date
-        entries_before_ce.sort(key=lambda x: x["date"])
+        _throw_temporal_coverage_error(
+            entries_before_ce,
+            earliest_ce_date,
+            default_currency,
+            reporting_currency=reporting_currency,
+        )
 
-        earliest_gle_date = entries_before_ce[0]["date"]
-        total_count = len(entries_before_ce)
 
-        # Format dates as dd-mm-yyyy
-        earliest_ce_date_formatted = formatdate(earliest_ce_date, DATE_FORMAT_DISPLAY)
-        earliest_gle_date_formatted = formatdate(earliest_gle_date, DATE_FORMAT_DISPLAY)
+def _throw_temporal_coverage_error(
+    entries_before_ce: list[dict[str, Any]],
+    earliest_ce_date: date,
+    default_currency: str,
+    *,
+    reporting_currency: str,
+) -> None:
+    # Sort by date
+    entries_before_ce.sort(key=itemgetter("date"))
 
-        # Build error message with proper HTML
-        entry_word = "entry" if total_count == 1 else "entries"
-        error_parts = [
-            '<div style="margin-bottom: 15px;">',
-            f"<p>Found <strong>{total_count}</strong> GL {entry_word} "
-            "dated before the earliest Currency Exchange record.</p>",
-            "<p>",
-            f"<strong>Currency Pair:</strong> {default_currency} ↔ "
-            f"{reporting_currency}<br>",
-            "<strong>Earliest Currency Exchange Date:</strong> "
-            f"{earliest_ce_date_formatted}<br>",
-            f"<strong>Earliest GL Entry Date:</strong> {earliest_gle_date_formatted}",
-            "</p>",
-            "</div>",
+    earliest_gle_date = entries_before_ce[0]["date"]
+    total_count = len(entries_before_ce)
+
+    # Format dates as dd-mm-yyyy
+    earliest_ce_date_formatted = formatdate(earliest_ce_date, DATE_FORMAT_DISPLAY)
+    earliest_gle_date_formatted = formatdate(earliest_gle_date, DATE_FORMAT_DISPLAY)
+
+    # Build error message with proper HTML
+    entry_word = "entry" if total_count == 1 else "entries"
+    error_parts = [
+        '<div style="margin-bottom: 15px;">',
+        f"<p>Found <strong>{total_count}</strong> GL {entry_word} dated before the earliest Currency Exchange record.</p>",
+        "<p>",
+        f"<strong>Currency Pair:</strong> {default_currency} ↔ {reporting_currency}<br>",
+        f"<strong>Earliest Currency Exchange Date:</strong> {earliest_ce_date_formatted}<br>",
+        f"<strong>Earliest GL Entry Date:</strong> {earliest_gle_date_formatted}",
+        "</p>",
+        "</div>",
+    ]
+
+    # Add CSV export button if more than 20 entries
+    if total_count > CSV_EXPORT_THRESHOLD:
+        # Store entries in frappe cache for CSV export
+        cache_key = (
+            f"{TEMP_CACHE_KEY_PREFIX}"
+            f"{frappe.generate_hash(length=TEMP_CACHE_KEY_HASH_LENGTH)}"
+        )
+        cast("RedisWrapper", frappe.cache).set_value(
+            cache_key, entries_before_ce, expires_in_sec=TEMP_CACHE_EXPIRATION_SEC
+        )
+
+        error_parts.extend(
+            [
+                '<div style="margin-bottom: 15px;">',
+                '<button class="btn btn-sm btn-primary" ',
+                f"""onclick="downloadTemporalValidationCSV('{cache_key}', '{default_currency}', '{reporting_currency}')" """,
+                'style="font-size: 90%;">',
+                f'<i class="fa fa-download"></i> Download Full List (CSV) - {total_count} entries',
+                "</button>",
+                "</div>",
+            ]
+        )
+
+    limit = ERROR_TABLE_DISPLAY_LIMIT
+    showing_text = (
+        f"(showing first {limit} of {total_count})" if total_count > limit else ""
+    )
+    error_parts.extend(
+        [
+            f"<p><strong>GL Entries Without Exchange Rates {showing_text}:</strong></p>",
+            '<table class="table table-bordered table-sm" style="font-size: 90%; margin-bottom: 15px;">',
+            "<thead><tr>",
+            "<th>GL Entry</th><th>Date</th><th>Voucher</th>",
+            "</tr></thead>",
+            "<tbody>",
         ]
+    )
 
-        # Add CSV export button if more than 20 entries
-        if total_count > CSV_EXPORT_THRESHOLD:
-            # Store entries in frappe cache for CSV export
-            cache_key = (
-                f"{TEMP_CACHE_KEY_PREFIX}"
-                f"{frappe.generate_hash(length=TEMP_CACHE_KEY_HASH_LENGTH)}"
-            )
-            frappe.cache().set_value(
-                cache_key, entries_before_ce, expires_in_sec=TEMP_CACHE_EXPIRATION_SEC
-            )
-
-            error_parts.extend(
-                [
-                    '<div style="margin-bottom: 15px;">',
-                    '<button class="btn btn-sm btn-primary" ',
-                    f"onclick=\"downloadTemporalValidationCSV('{cache_key}', "
-                    f"'{default_currency}', '{reporting_currency}')\" ",
-                    'style="font-size: 90%;">',
-                    f'<i class="fa fa-download"></i> Download Full List (CSV) - '
-                    f"{total_count} entries",
-                    "</button>",
-                    "</div>",
-                ]
-            )
-
-        limit = ERROR_TABLE_DISPLAY_LIMIT
-        showing_text = (
-            f"(showing first {limit} of {total_count})" if total_count > limit else ""
-        )
+    # Add first 20 entries
+    for entry in entries_before_ce[:ERROR_TABLE_DISPLAY_LIMIT]:
+        date_formatted = formatdate(entry["date"], DATE_FORMAT_DISPLAY)
         error_parts.extend(
             [
-                f"<p><strong>GL Entries Without Exchange Rates "
-                f"{showing_text}:</strong></p>",
-                '<table class="table table-bordered table-sm" '
-                'style="font-size: 90%; margin-bottom: 15px;">',
-                "<thead><tr>",
-                "<th>GL Entry</th><th>Date</th><th>Voucher</th>",
-                "</tr></thead>",
-                "<tbody>",
+                "<tr>",
+                f"<td>{entry['gle']}</td>",
+                f"<td><strong>{date_formatted}</strong></td>",
+                f"<td>{entry['voucher']}</td>",
+                "</tr>",
             ]
         )
 
-        # Add first 20 entries
-        for entry in entries_before_ce[:ERROR_TABLE_DISPLAY_LIMIT]:
-            date_formatted = formatdate(entry["date"], DATE_FORMAT_DISPLAY)
-            error_parts.extend(
-                [
-                    "<tr>",
-                    f"<td>{entry['gle']}</td>",
-                    f"<td><strong>{date_formatted}</strong></td>",
-                    f"<td>{entry['voucher']}</td>",
-                    "</tr>",
-                ]
-            )
-
-        if total_count > CSV_EXPORT_THRESHOLD:
-            remaining = total_count - ERROR_TABLE_DISPLAY_LIMIT
-            error_parts.append(
-                f'<tr><td colspan="3"><em>...and {remaining} more entries '
-                'not shown. Click "Download Full List" above to get all '
-                "entries.</em></td></tr>"
-            )
-
-        error_parts.extend(
-            [
-                "</tbody>",
-                "</table>",
-                '<p style="margin-top: 15px;">',
-                "<strong>Action Required:</strong> Create Currency Exchange "
-                f"records for <strong>{default_currency} ↔ "
-                f"{reporting_currency}</strong> ",
-                f"with dates starting from <strong>{earliest_gle_date_formatted}"
-                "</strong> or earlier.",
-                "</p>",
-            ]
+    if total_count > CSV_EXPORT_THRESHOLD:
+        remaining = total_count - ERROR_TABLE_DISPLAY_LIMIT
+        error_parts.append(
+            f'<tr><td colspan="3"><em>...and {remaining} more entries '
+            'not shown. Click "Download Full List" above to get all '
+            "entries.</em></td></tr>"
         )
-        error_message = "".join(error_parts)
 
-        # Throw validation error with HTML content
-        frappe.throw(error_message, title=_("GL Entries Precede Exchange Rate Data"))
+    error_parts.extend(
+        [
+            "</tbody>",
+            "</table>",
+            '<p style="margin-top: 15px;">',
+            f"<strong>Action Required:</strong> Create Currency Exchange records for <strong>{default_currency} ↔ {reporting_currency}</strong> ",
+            f"with dates starting from <strong>{earliest_gle_date_formatted}</strong> or earlier.",
+            "</p>",
+        ]
+    )
+    error_message = "".join(error_parts)
+
+    # Throw validation error with HTML content
+    frappe.throw(error_message, title=_("GL Entries Precede Exchange Rate Data"))
+
+
+def _required_rate_date(value: str | date | None) -> date:
+    result = getdate(value)
+    if result is None:
+        message = _("Invalid date in reporting currency exchange data: {0}").format(
+            value
+        )
+        raise frappe.ValidationError(message)
+    return result

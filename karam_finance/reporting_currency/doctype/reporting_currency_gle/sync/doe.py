@@ -13,7 +13,10 @@ Phase 4: Create 2 RC GLE Records per Account
 Phase 5: Bulk Insert
 """
 
+from __future__ import annotations
+
 import hashlib
+from dataclasses import dataclass, field
 from datetime import date
 from typing import Any, cast
 
@@ -21,11 +24,16 @@ import frappe
 from frappe import _
 from frappe.utils import flt, get_datetime, getdate, now
 
+from karam_finance.reporting_currency.doctype.reporting_currency_settings.reporting_currency_settings import (
+    ReportingCurrencySettings,
+    validate_doe_exchange_rates,
+)
+
+from .doe_storage import bulk_insert_doe_records as _bulk_insert_doe_records
 from .validation import get_reporting_company
 
 DOCTYPE_RC_GLE = "Reporting Currency GLE"
 DOCTYPE_RC_SETTINGS = "Reporting Currency Settings"
-DOCTYPE_ACCOUNT_EXCLUSIONS = "Account Exclusions"
 
 # Threshold for considering amounts as effectively zero
 DOE_ZERO_THRESHOLD = 0.01
@@ -36,13 +44,14 @@ DOE_NAME_MIN_PARTS = 4
 
 def _get_rc_parameters_sorted_by_date(rc_parameters: list[Any]) -> list[Any]:
     """Return rc_parameters rows sorted by doe_posting_date ascending."""
-    return sorted(rc_parameters, key=lambda row: getdate(row.doe_posting_date))
+    return sorted(rc_parameters, key=_parameter_posting_date)
 
 
 def _get_accounts_with_totals(
     company: str,
     reporting_currency: str,
     excluded_accounts_condition: str,
+    *,
     until_date: str,
 ) -> list[dict[str, Any]]:
     """Return DOE account groups with their aggregated non-DOE RCGLE totals.
@@ -232,10 +241,12 @@ def compute_doe(background: bool = True) -> dict[str, Any]:
     """
     frappe.only_for("System Manager")
     # Get settings (Single DocType)
-    settings = frappe.get_single(DOCTYPE_RC_SETTINGS)
+    settings = cast("ReportingCurrencySettings", frappe.get_single(DOCTYPE_RC_SETTINGS))
 
     if not settings.reporting_currency:
         frappe.throw(_("Reporting Currency Settings not configured"))
+
+    validate_doe_exchange_rates(settings.rc_parameters or [])
 
     if background:
         # Generate unique job ID (md5 used for brevity, not security)
@@ -262,8 +273,6 @@ def _compute_doe_background() -> dict[str, Any]:
     cumulatively from the beginning until each row's doe_posting_date. DOE records
     accumulate across rows.
     """
-    from erpnext.accounts.utils import get_fiscal_year  # noqa: PLC0415
-
     frappe.db.commit()  # nosemgrep — background job
     company = None
 
@@ -275,7 +284,9 @@ def _compute_doe_background() -> dict[str, Any]:
         # ====================================================================
         _publish_progress(10, "Phase 1: Validating configuration...")
 
-        settings = frappe.get_single(DOCTYPE_RC_SETTINGS)
+        settings = cast(
+            "ReportingCurrencySettings", frappe.get_single(DOCTYPE_RC_SETTINGS)
+        )
 
         company = get_reporting_company()
 
@@ -287,6 +298,8 @@ def _compute_doe_background() -> dict[str, Any]:
 
         if not settings.rc_parameters or len(settings.rc_parameters) == 0:
             frappe.throw(_("No RC Parameters defined. Please add at least one row."))
+
+        validate_doe_exchange_rates(settings.rc_parameters)
 
         rc_gle_count = frappe.db.count(
             DOCTYPE_RC_GLE, {"company": company, "reporting_doe": 0}
@@ -301,23 +314,7 @@ def _compute_doe_background() -> dict[str, Any]:
         # ====================================================================
         _publish_progress(25, "Phase 2: Filtering RC GLE records...")
 
-        excluded_accounts = frappe.db.sql_list(
-            """
-			SELECT account
-			FROM `tabAccount Exclusions`
-			WHERE parent = %s
-		""",
-            DOCTYPE_RC_SETTINGS,
-        )
-
-        excluded_accounts_condition = ""
-        if excluded_accounts:
-            excluded_accounts_str = ", ".join(
-                [frappe.db.escape(acc) for acc in excluded_accounts]
-            )
-            excluded_accounts_condition = (
-                f"AND rc.account NOT IN ({excluded_accounts_str})"
-            )
+        excluded_accounts_condition = _get_excluded_accounts_condition()
 
         # Sort rc_parameters by doe_posting_date ascending
         sorted_params = _get_rc_parameters_sorted_by_date(settings.rc_parameters)
@@ -344,115 +341,15 @@ def _compute_doe_background() -> dict[str, Any]:
         # ====================================================================
         _publish_progress(40, "Phase 4: Computing DOE and creating records...")
 
-        doe_records: list[dict[str, Any]] = []
-        total_processed_count = 0
-
-        name_counters_by_year: dict[int, dict[str, Any]] = {}
-
-        # Track prior DOE amounts per account/party group for subsequent rows.
-        # This is needed because DOE records are bulk inserted at the end,
-        # so subsequent rows can't see prior DOE via database queries
-        prior_doe_by_group: dict[
-            tuple[str, str, str | None, str | None], dict[str, float]
-        ] = {}
-
-        for row_idx, row in enumerate(sorted_params):
-            exchange_rate = flt(row.exchange_rate)
-            doe_posting_date = cast("date", getdate(row.doe_posting_date))
-            profit_account = row.profit_account
-            loss_account = row.loss_account
-
-            if not exchange_rate:
-                frappe.log_error(
-                    title=f"DOE Skipped for row {row.idx}",
-                    message="Exchange rate not configured",
-                )
-                continue
-
-            if not profit_account or not loss_account:
-                frappe.log_error(
-                    title=f"DOE Skipped for row {row.idx}",
-                    message="Profit/Loss accounts not configured",
-                )
-                continue
-
-            fiscal_year = get_fiscal_year(doe_posting_date, company=company)[0]
-
-            profit_loss_currency_map = _get_profit_loss_currency_map(
-                profit_account, loss_account, settings.reporting_currency
-            )
-
-            doe_year = doe_posting_date.year
-            if doe_year not in name_counters_by_year:
-                name_counters_by_year[doe_year] = _get_starting_doe_number(
-                    doe_posting_date
-                )
-            name_counter = name_counters_by_year[doe_year]
-
-            # Get cumulative totals from the beginning until doe_posting_date.
-            account_groups = _get_accounts_with_totals(
-                company=company,
-                reporting_currency=cast("str", settings.reporting_currency),
-                excluded_accounts_condition=excluded_accounts_condition,
-                until_date=doe_posting_date.isoformat(),
-            )
-
-            if not account_groups:
-                msg = f"Row {row.idx} (until {doe_posting_date}): No accounts"
-                _publish_progress(
-                    40 + int((row_idx + 1) / len(sorted_params) * 45), msg
-                )
-                continue
-
-            records, processed_count = _create_doe_records_for_groups(
-                account_groups=account_groups,
-                company=company,
-                reporting_currency=cast("str", settings.reporting_currency),
-                exchange_rate=exchange_rate,
-                doe_posting_date=doe_posting_date.isoformat(),
-                profit_account=profit_account,
-                loss_account=loss_account,
-                fiscal_year=fiscal_year,
-                name_counter=name_counter,
-                profit_loss_currency_map=profit_loss_currency_map,
-                prior_doe_by_group=prior_doe_by_group,
-            )
-            doe_records.extend(records)
-            total_processed_count += processed_count
-
-            progress = 40 + int((row_idx + 1) / len(sorted_params) * 45)
-            msg = f"Completed row {row.idx} (until {doe_posting_date})"
-            _publish_progress(progress, msg)
-
-        _publish_progress(85, f"Created {len(doe_records)} DOE records")
-
-        # ====================================================================
-        # PHASE 5: BULK INSERT
-        # ====================================================================
-        _publish_progress(90, "Phase 5: Inserting DOE records...")
-
-        if doe_records:
-            _bulk_insert_doe_records(doe_records)
-
-        _publish_progress(95, f"Inserted {len(doe_records)} DOE records")
-
-        settings.db_set("last_sync_timestamp", now())
-        frappe.db.commit()  # nosemgrep — background job
-
-        _publish_progress(100, "DOE computation completed successfully!")
-
-        msg = (
-            f"DOE computation completed. Processed {total_processed_count} "
-            f"accounts, created {len(doe_records)} records."
+        doe_records, total_processed_count = _collect_doe_records(
+            sorted_params,
+            cast("str", company),
+            cast("str", settings.reporting_currency),
+            excluded_accounts_condition=excluded_accounts_condition,
+            progress=True,
         )
-        result = {
-            "success": True,
-            "message": msg,
-            "accounts_processed": total_processed_count,
-            "records_created": len(doe_records),
-        }
 
-        frappe.msgprint(result["message"], alert=True, indicator="green")
+        result = _finish_background_doe(settings, doe_records, total_processed_count)
 
     except Exception as e:
         frappe.db.rollback()
@@ -490,11 +387,11 @@ def compute_doe_inline(
     Returns:
         dict: Computation result with accounts_processed and records_created
     """
-    from erpnext.accounts.utils import get_fiscal_year  # noqa: PLC0415
-
     savepoint_name: str | None = None
     try:
-        settings = frappe.get_single(DOCTYPE_RC_SETTINGS)
+        settings = cast(
+            "ReportingCurrencySettings", frappe.get_single(DOCTYPE_RC_SETTINGS)
+        )
 
         company = get_reporting_company()
 
@@ -512,24 +409,10 @@ def compute_doe_inline(
         if not settings.rc_parameters or len(settings.rc_parameters) == 0:
             return {"success": False, "message": "No RC Parameters defined"}
 
-        # Get excluded accounts
-        excluded_accounts = frappe.db.sql_list(
-            """
-			SELECT account
-			FROM `tabAccount Exclusions`
-			WHERE parent = %s
-		""",
-            DOCTYPE_RC_SETTINGS,
-        )
+        validate_doe_exchange_rates(settings.rc_parameters)
 
-        excluded_accounts_condition = ""
-        if excluded_accounts:
-            excluded_accounts_str = ", ".join(
-                [frappe.db.escape(acc) for acc in excluded_accounts]
-            )
-            excluded_accounts_condition = (
-                f"AND rc.account NOT IN ({excluded_accounts_str})"
-            )
+        # Get excluded accounts
+        excluded_accounts_condition = _get_excluded_accounts_condition()
 
         # Sort rc_parameters by doe_posting_date ascending
         sorted_params = _get_rc_parameters_sorted_by_date(settings.rc_parameters)
@@ -546,94 +429,18 @@ def compute_doe_inline(
             company,
         )
 
-        doe_records: list[dict[str, Any]] = []
-        total_processed_count = 0
-
-        # Track name counters per doe_posting_date year to avoid collisions
-        name_counters_by_year: dict[int, dict[str, Any]] = {}
-
-        # Track prior DOE amounts per account/party group for subsequent rows.
-        # This is needed because DOE records are bulk inserted at the end,
-        # so subsequent rows can't see prior DOE via database queries
-        prior_doe_by_group: dict[
-            tuple[str, str, str | None, str | None], dict[str, float]
-        ] = {}
-
-        # Process each rc_parameters row (oldest to newest by doe_posting_date)
-        for row in sorted_params:
-            exchange_rate = flt(row.exchange_rate)
-            doe_posting_date = cast("date", getdate(row.doe_posting_date))
-            profit_account = row.profit_account
-            loss_account = row.loss_account
-
-            if not exchange_rate:
-                frappe.log_error(
-                    title=f"DOE Skipped for row {row.idx}",
-                    message="Exchange rate not configured",
-                )
-                continue
-
-            if not profit_account or not loss_account:
-                frappe.log_error(
-                    title=f"DOE Skipped for row {row.idx}",
-                    message="Profit/Loss accounts not configured",
-                )
-                continue
-
-            fiscal_year = get_fiscal_year(doe_posting_date, company=company)[0]
-
-            profit_loss_currency_map = _get_profit_loss_currency_map(
-                profit_account, loss_account, settings.reporting_currency
-            )
-
-            doe_year = doe_posting_date.year
-            if doe_year not in name_counters_by_year:
-                name_counters_by_year[doe_year] = _get_starting_doe_number(
-                    doe_posting_date
-                )
-            name_counter = name_counters_by_year[doe_year]
-
-            # Get cumulative totals from the beginning until doe_posting_date.
-            account_groups = _get_accounts_with_totals(
-                company=company,
-                reporting_currency=cast("str", settings.reporting_currency),
-                excluded_accounts_condition=excluded_accounts_condition,
-                until_date=doe_posting_date.isoformat(),
-            )
-
-            if not account_groups:
-                continue
-
-            records, processed_count = _create_doe_records_for_groups(
-                account_groups=account_groups,
-                company=company,
-                reporting_currency=cast("str", settings.reporting_currency),
-                exchange_rate=exchange_rate,
-                doe_posting_date=doe_posting_date.isoformat(),
-                profit_account=profit_account,
-                loss_account=loss_account,
-                fiscal_year=fiscal_year,
-                name_counter=name_counter,
-                profit_loss_currency_map=profit_loss_currency_map,
-                prior_doe_by_group=prior_doe_by_group,
-            )
-            doe_records.extend(records)
-            total_processed_count += processed_count
+        doe_records, total_processed_count = _collect_doe_records(
+            sorted_params,
+            company,
+            settings.reporting_currency,
+            excluded_accounts_condition=excluded_accounts_condition,
+        )
 
         # Bulk insert all accumulated DOE records
         if doe_records:
             _bulk_insert_doe_records(doe_records)
 
-        msg = (
-            f"DOE computation completed. Processed {total_processed_count} "
-            f"accounts, created {len(doe_records)} records."
-        )
-        return {
-            "success": True,
-            "message": msg,
-            "accounts_processed": total_processed_count,
-            "records_created": len(doe_records),
-        }
+        return _doe_result(doe_records, total_processed_count)
 
     except Exception:
         if savepoint_name:
@@ -648,6 +455,163 @@ def compute_doe_inline(
         raise
 
 
+def _get_excluded_accounts_condition() -> str:
+    excluded_accounts = frappe.db.sql_list(
+        """
+			SELECT account
+			FROM `tabAccount Exclusions`
+			WHERE parent = %s
+		""",
+        DOCTYPE_RC_SETTINGS,
+    )
+
+    excluded_accounts_condition = ""
+    if excluded_accounts:
+        excluded_accounts_str = ", ".join(
+            [frappe.db.escape(acc) for acc in excluded_accounts]
+        )
+        excluded_accounts_condition = f"AND rc.account NOT IN ({excluded_accounts_str})"
+
+    return excluded_accounts_condition
+
+
+def _finish_background_doe(
+    settings: ReportingCurrencySettings,
+    doe_records: list[dict[str, Any]],
+    total_processed_count: int,
+) -> dict[str, Any]:
+    _publish_progress(85, f"Created {len(doe_records)} DOE records")
+
+    # ====================================================================
+    # PHASE 5: BULK INSERT
+    # ====================================================================
+    _publish_progress(90, "Phase 5: Inserting DOE records...")
+
+    if doe_records:
+        _bulk_insert_doe_records(doe_records)
+
+    _publish_progress(95, f"Inserted {len(doe_records)} DOE records")
+
+    settings.db_set("last_sync_timestamp", now())
+    frappe.db.commit()  # nosemgrep — background job
+
+    _publish_progress(100, "DOE computation completed successfully!")
+
+    result = _doe_result(doe_records, total_processed_count)
+
+    frappe.msgprint(result["message"], alert=True, indicator="green")
+
+    return result
+
+
+def _doe_result(records: list[dict[str, Any]], count: int) -> dict[str, Any]:
+    return {
+        "success": True,
+        "message": f"DOE computation completed. Processed {count} accounts, created {len(records)} records.",
+        "accounts_processed": count,
+        "records_created": len(records),
+    }
+
+
+def _parameter_posting_date(row: Any) -> date:
+    return _required_doe_date(row.doe_posting_date)
+
+
+def _required_doe_date(value: str | date) -> date:
+    posting_date = getdate(value)
+    if posting_date is None:
+        raise frappe.ValidationError(_("Invalid DOE posting date"))
+    return posting_date
+
+
+@dataclass(kw_only=True)
+class _DOEComputation:
+    excluded_accounts_condition: str
+    name_counters_by_year: dict[int, dict[str, Any]] = field(default_factory=dict)
+    # Records are inserted after all rows, so carry each group's earlier DOE in memory.
+    prior_doe_by_group: dict[
+        tuple[str, str, str | None, str | None], dict[str, float]
+    ] = field(default_factory=dict)
+
+
+def _collect_doe_records(
+    sorted_params: list[Any],
+    company: str,
+    reporting_currency: str,
+    *,
+    excluded_accounts_condition: str,
+    progress: bool = False,
+) -> tuple[list[dict[str, Any]], int]:
+    context = _DOEComputation(excluded_accounts_condition=excluded_accounts_condition)
+    doe_records: list[dict[str, Any]] = []
+    total_processed_count = 0
+    for row_idx, row in enumerate(sorted_params):
+        records, count, message = _process_doe_parameter(
+            row,
+            company,
+            reporting_currency,
+            context=context,
+        )
+        doe_records.extend(records)
+        total_processed_count += count
+        if progress and message:
+            _publish_progress(
+                40 + int((row_idx + 1) / len(sorted_params) * 45), message
+            )
+    return doe_records, total_processed_count
+
+
+def _process_doe_parameter(
+    row: Any,
+    company: str,
+    reporting_currency: str,
+    *,
+    context: _DOEComputation,
+) -> tuple[list[dict[str, Any]], int, str | None]:
+    from erpnext.accounts.utils import get_fiscal_year  # noqa: PLC0415
+
+    exchange_rate = flt(row.exchange_rate)
+    doe_posting_date = _parameter_posting_date(row)
+    profit_account, loss_account = row.profit_account, row.loss_account
+    if not profit_account or not loss_account:
+        frappe.log_error(
+            title=f"DOE Skipped for row {row.idx}",
+            message="Profit/Loss accounts not configured",
+        )
+        return [], 0, None
+    fiscal_year = get_fiscal_year(doe_posting_date, company=company)[0]
+    profit_loss_currency_map = _get_profit_loss_currency_map(
+        profit_account, loss_account, reporting_currency
+    )
+    doe_year = doe_posting_date.year
+    if doe_year not in context.name_counters_by_year:
+        context.name_counters_by_year[doe_year] = _get_starting_doe_number(
+            doe_posting_date
+        )
+    account_groups = _get_accounts_with_totals(
+        company=company,
+        reporting_currency=reporting_currency,
+        excluded_accounts_condition=context.excluded_accounts_condition,
+        until_date=doe_posting_date.isoformat(),
+    )
+    if not account_groups:
+        return [], 0, f"Row {row.idx} (until {doe_posting_date}): No accounts"
+    records, count = _create_doe_records_for_groups(
+        account_groups=account_groups,
+        company=company,
+        reporting_currency=reporting_currency,
+        exchange_rate=exchange_rate,
+        doe_posting_date=doe_posting_date.isoformat(),
+        profit_account=profit_account,
+        loss_account=loss_account,
+        fiscal_year=fiscal_year,
+        name_counter=context.name_counters_by_year[doe_year],
+        profit_loss_currency_map=profit_loss_currency_map,
+        prior_doe_by_group=context.prior_doe_by_group,
+    )
+    return records, count, f"Completed row {row.idx} (until {doe_posting_date})"
+
+
 # ============================================================================
 # PHASE 3: COMPUTE DOE FOR ACCOUNT
 # ============================================================================
@@ -656,6 +620,7 @@ def compute_doe_inline(
 def _compute_doe_for_account(
     company: str,
     account: str,
+    *,
     _account_currency: str,
     _reporting_currency: str,
     exchange_rate: float,
@@ -698,15 +663,15 @@ def _compute_doe_for_account(
         record = records[0]
 
     # Step 1: Default currency totals
-    total_debit_default_currency = flt(record.get("total_debit"), 9)
-    total_credit_default_currency = flt(record.get("total_credit"), 9)
+    total_debit_default_currency = flt(record.get("total_debit") or 0, 9)
+    total_credit_default_currency = flt(record.get("total_credit") or 0, 9)
     difference_default_currency = (
         total_debit_default_currency - total_credit_default_currency
     )
 
     # Step 2: Reporting currency totals
-    reporting_debit_total = flt(record.get("total_reporting_debit"), 9)
-    reporting_credit_total = flt(record.get("total_reporting_credit"), 9)
+    reporting_debit_total = flt(record.get("total_reporting_debit") or 0, 9)
+    reporting_credit_total = flt(record.get("total_reporting_credit") or 0, 9)
     difference_reporting_currency = reporting_debit_total - reporting_credit_total
 
     # Step 3: DOE difference
@@ -812,7 +777,7 @@ def _create_doe_records(  # noqa: PLR0913, PLR0917
         profit_loss_currency_map[profit_loss_acct] = profit_loss_currency
 
     # Generate voucher_no for DOE pair identification (e.g. DOE-2017-40110020001)
-    doe_year = getdate(doe_posting_date).year
+    doe_year = _required_doe_date(doe_posting_date).year
     account_number = (
         frappe.db.get_value("Account", account, "account_number") or account
     )
@@ -825,6 +790,7 @@ def _create_doe_records(  # noqa: PLR0913, PLR0917
     # Common fields (excluding meta fields like 'doctype')
     common_fields = {
         "reporting_doe": 1,
+        "is_opening": "No",
         "docstatus": 1,
         "posting_date": doe_posting_date,
         "fiscal_year": fiscal_year,
@@ -880,6 +846,8 @@ def _get_starting_doe_number(posting_date: str | date) -> dict[str, int]:
     Returns a dict with 'year' and 'counter' that can be incremented.
     """
     posting_datetime = get_datetime(posting_date)
+    if posting_datetime is None:
+        raise frappe.ValidationError(_("Invalid DOE posting date"))
     year = posting_datetime.year
 
     # Get the last number used for this year
@@ -931,133 +899,9 @@ def _generate_doe_name_from_counter(
     return f"KE-RCDOE-GLE-{year}-{number:05d}"
 
 
-def _generate_doe_name(_company: str, posting_date: str) -> str:
-    """Generate a unique name for DOE entry.
-
-    Pattern: KE-RCDOE-GLE-{YYYY}-{#####}
-
-    Args:
-        _company: Company name (reserved for future use)
-        posting_date: Posting date for the DOE entry
-    """
-    posting_datetime = get_datetime(posting_date)
-    year = posting_datetime.year
-
-    # Get next number for this year
-    last_name = frappe.db.sql(  # nosemgrep — no user input
-        f"""
-		SELECT name
-		FROM `tab{DOCTYPE_RC_GLE}`
-		WHERE name LIKE 'KE-RCDOE-GLE-{year}-%'
-		ORDER BY name DESC
-		LIMIT 1
-	"""  # noqa: S608
-    )
-
-    if last_name and last_name[0][0]:
-        # Extract number and increment
-        parts = last_name[0][0].split("-")
-        if len(parts) >= DOE_NAME_MIN_PARTS:
-            try:
-                last_number = int(parts[3])
-                next_number = last_number + 1
-            except ValueError, IndexError:
-                next_number = 1
-        else:
-            next_number = 1
-    else:
-        next_number = 1
-
-    return f"KE-RCDOE-GLE-{year}-{next_number:05d}"
-
-
 # ============================================================================
 # PHASE 5: BULK INSERT
 # ============================================================================
-
-
-def _bulk_insert_doe_records(records: list[dict[str, Any]]) -> None:
-    """Bulk insert DOE records into RC GLE table."""
-    # Define fields to insert (excluding 'doctype' as it's a meta field)
-    fields = [
-        "name",
-        "reporting_doe",
-        "posting_date",
-        "fiscal_year",
-        "account",
-        "account_currency",
-        "party_type",
-        "party",
-        "against",
-        "voucher_type",
-        "voucher_no",
-        "reporting_currency",
-        "reporting_debit",
-        "reporting_credit",
-        "debit",
-        "credit",
-        "debit_amount_in_account_currency",
-        "credit_amount_in_account_currency",
-        "total_debit_default_currency",
-        "total_credit_default_currency",
-        "difference_default_currency",
-        "reporting_debit_total",
-        "reporting_credit_total",
-        "difference_reporting_currency",
-        "reporting_doe_difference",
-        "company",
-        "docstatus",
-        "manual_entry",
-        "creation",
-        "modified",
-        "owner",
-        "modified_by",
-    ]
-
-    # Prepare values
-    values = []
-    for record in records:
-        row = [
-            record.get("name"),
-            record.get("reporting_doe"),
-            record.get("posting_date"),
-            record.get("fiscal_year"),
-            record.get("account"),
-            record.get("account_currency"),
-            record.get("party_type"),
-            record.get("party"),
-            record.get("against"),
-            record.get("voucher_type"),
-            record.get("voucher_no"),
-            record.get("reporting_currency"),
-            flt(record.get("reporting_debit"), 9),
-            flt(record.get("reporting_credit"), 9),
-            flt(record.get("debit"), 9),
-            flt(record.get("credit"), 9),
-            flt(record.get("debit_amount_in_account_currency"), 9),
-            flt(record.get("credit_amount_in_account_currency"), 9),
-            flt(record.get("total_debit_default_currency"), 9),
-            flt(record.get("total_credit_default_currency"), 9),
-            flt(record.get("difference_default_currency"), 9),
-            flt(record.get("reporting_debit_total"), 9),
-            flt(record.get("reporting_credit_total"), 9),
-            flt(record.get("difference_reporting_currency"), 9),
-            flt(record.get("reporting_doe_difference"), 9),
-            record.get("company"),
-            record.get("docstatus", 0),
-            0,  # manual_entry - DOE records are never manual
-            now(),  # creation
-            now(),  # modified
-            frappe.session.user,  # owner
-            frappe.session.user,  # modified_by
-        ]
-        values.append(row)
-
-    # Bulk insert in chunks of 1000
-    chunk_size = 1000
-    for i in range(0, len(values), chunk_size):
-        chunk = values[i : i + chunk_size]
-        frappe.db.bulk_insert(DOCTYPE_RC_GLE, fields, chunk)
 
 
 # ============================================================================

@@ -1,7 +1,9 @@
 // Dynamically constrain Karam Series options to doctypes flagged in the record.
 (function karamSeriesFilter() {
   const scrub = (value) => {
-    if (!value) return "";
+    if (!value) {
+      return "";
+    }
     if (frappe.scrub) {
       return frappe.scrub(value);
     }

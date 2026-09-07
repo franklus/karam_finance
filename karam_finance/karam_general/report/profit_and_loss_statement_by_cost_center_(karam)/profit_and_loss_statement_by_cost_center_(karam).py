@@ -203,14 +203,7 @@ def build_cost_centre_rows(
         rows.append(row)
         row_by_name[cost_center["name"]] = row
 
-    for cost_center in reversed(cost_centres):
-        parent = cost_center.get("parent_cost_center")
-        if not parent or parent not in row_by_name:
-            continue
-        child_row = row_by_name[cost_center["name"]]
-        parent_row = row_by_name[parent]
-        for key in period_keys:
-            parent_row[key] += child_row.get(key, 0.0)
+    _roll_up_cost_centres(cost_centres, row_by_name, period_keys)
     return rows
 
 
@@ -279,19 +272,7 @@ def apply_growth_view(rows: list[dict[str, Any]], period_list: list[Any]) -> Non
             current_value = source_row.get(current_key)
             previous_value = source_row.get(previous_key)
 
-            if current_value is None:
-                target_row[current_key] = None
-                continue
-
-            # A zero (or missing) prior period has no meaningful growth
-            # denominator.  Returning ``None`` lets the report render NA
-            # instead of inventing a 100% result.
-            if previous_value in (None, 0):
-                target_row[current_key] = None
-                continue
-
-            growth = (current_value - previous_value) / previous_value
-            target_row[current_key] = round(growth * 100, 2)
+            target_row[current_key] = _growth_percentage(current_value, previous_value)
 
 
 def apply_margin_view(
@@ -371,14 +352,9 @@ def get_report_summary(
         net_expense = float(sum(expense_totals))
         net_profit = float(sum(net_totals))
 
-    if len(period_list) == 1 and periodicity == "Yearly":
-        income_label = _("Total Income This Year")
-        expense_label = _("Total Expense This Year")
-        profit_label = _("Profit This Year")
-    else:
-        income_label = _("Total Income")
-        expense_label = _("Total Expense")
-        profit_label = _("Net Profit")
+    income_label, expense_label, profit_label = _summary_labels(
+        period_list, periodicity
+    )
 
     report_summary = [
         {
@@ -414,7 +390,7 @@ def _normalise_scalar(value: object) -> str | None:
     return pnlcc_parsing.normalise_scalar(value)
 
 
-def _finance_book_clause(
+def _finance_book_clause(  # noqa: V103 - retained report compatibility wrapper.
     gl: Any,
     *,
     company: str,
@@ -513,3 +489,40 @@ def build_net_row_from_totals(
 
 
 get_total_by_root_type = pnlcc_data.get_total_by_root_type
+
+
+def _roll_up_cost_centres(
+    cost_centres: list[dict[str, Any]],
+    row_by_name: dict[str, dict[str, Any]],
+    period_keys: list[str],
+) -> None:
+    for cost_center in reversed(cost_centres):
+        parent = cost_center.get("parent_cost_center")
+        if not parent or parent not in row_by_name:
+            continue
+        child_row = row_by_name[cost_center["name"]]
+        parent_row = row_by_name[parent]
+        for key in period_keys:
+            parent_row[key] += child_row.get(key, 0.0)
+
+
+def _growth_percentage(current: float | None, previous: float | None) -> float | None:
+    # A zero or missing prior period has no meaningful growth denominator.
+    if current is None or previous in (None, 0):
+        return None
+    return round((current - previous) / previous * 100, 2)
+
+
+def _summary_labels(
+    period_list: list[Any], periodicity: str | None
+) -> tuple[str, str, str]:
+    if len(period_list) == 1 and periodicity == "Yearly":
+        income_label = _("Total Income This Year")
+        expense_label = _("Total Expense This Year")
+        profit_label = _("Profit This Year")
+    else:
+        income_label = _("Total Income")
+        expense_label = _("Total Expense")
+        profit_label = _("Net Profit")
+
+    return income_label, expense_label, profit_label

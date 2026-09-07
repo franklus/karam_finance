@@ -87,36 +87,45 @@ def _load_json_file(file_path: Path, label: str) -> dict[str, list[dict[str, Any
         with file_path.open("r", encoding="utf-8") as fixture_file:
             payload = json.load(fixture_file)
     except (OSError, UnicodeError, json.JSONDecodeError) as exc:
-        raise CustomFieldFixtureError(
-            f"Unable to load Custom Field fixture {file_path} ({label})"
-        ) from exc
+        message = f"Unable to load Custom Field fixture {file_path} ({label})"
+        raise CustomFieldFixtureError(message) from exc
 
     if not isinstance(payload, Mapping):
-        raise CustomFieldFixtureError(
-            f"Custom Field fixture {file_path} ({label}) must contain an object"
+        message = f"Custom Field fixture {file_path} ({label}) must contain an object"
+        raise CustomFieldFixtureError(message)
+
+    return {
+        _validate_doctype(doctype, file_path, label): _normalise_fields(
+            fields, doctype, file_path, label=label
         )
+        for doctype, fields in payload.items()
+    }
 
-    normalised: dict[str, list[dict[str, Any]]] = {}
-    for doctype, fields in payload.items():
-        if not isinstance(doctype, str) or not doctype.strip():
-            raise CustomFieldFixtureError(
-                f"Custom Field fixture {file_path} ({label}) has an invalid DocType"
+
+def _validate_doctype(doctype: Any, file_path: Path, label: str) -> str:
+    if not isinstance(doctype, str) or not doctype.strip():
+        message = f"Custom Field fixture {file_path} ({label}) has an invalid DocType"
+        raise CustomFieldFixtureError(message)
+    return doctype
+
+
+def _normalise_fields(
+    fields: Any, doctype: str, file_path: Path, *, label: str
+) -> list[dict[str, Any]]:
+    if not isinstance(fields, list):
+        message = (
+            f"Custom Field fixture {file_path} ({label}) must map {doctype!r} to a list"
+        )
+        raise CustomFieldFixtureError(message)
+    normalised: list[dict[str, Any]] = []
+    for index, field in enumerate(fields):
+        if not isinstance(field, Mapping):
+            message = (
+                f"Custom Field fixture {file_path} ({label}) has a non-object "
+                f"field at {doctype}[{index}]"
             )
-        if not isinstance(fields, list):
-            raise CustomFieldFixtureError(
-                f"Custom Field fixture {file_path} ({label}) must map "
-                f"{doctype!r} to a list"
-            )
-
-        normalised[doctype] = []
-        for index, field in enumerate(fields):
-            if not isinstance(field, Mapping):
-                raise CustomFieldFixtureError(
-                    f"Custom Field fixture {file_path} ({label}) has a non-object "
-                    f"field at {doctype}[{index}]"
-                )
-            normalised[doctype].append(dict(field))
-
+            raise CustomFieldFixtureError(message)
+        normalised.append(dict(field))
     return normalised
 
 
@@ -126,26 +135,35 @@ def _validate_custom_fields(
 ) -> None:
     """Validate the field-level contract shared by all fixture directories."""
     for doctype, fields in custom_fields.items():
-        fieldnames: set[str] = set()
-        for index, field in enumerate(fields):
-            fieldname = field.get("fieldname")
-            fieldtype = field.get("fieldtype")
-            if not isinstance(fieldname, str) or not fieldname.strip():
-                raise CustomFieldFixtureError(
-                    f"Custom Field fixture ({label}) has an invalid fieldname "
-                    f"at {doctype}[{index}]"
-                )
-            if not isinstance(fieldtype, str) or not fieldtype.strip():
-                raise CustomFieldFixtureError(
-                    f"Custom Field fixture ({label}) has an invalid fieldtype "
-                    f"for {doctype}.{fieldname}"
-                )
-            if fieldname in fieldnames:
-                raise CustomFieldFixtureError(
-                    f"Custom Field fixture ({label}) defines duplicate field "
-                    f"{doctype}.{fieldname}"
-                )
-            fieldnames.add(fieldname)
+        _validate_doctype_fields(doctype, fields, label)
+
+
+def _validate_doctype_fields(
+    doctype: str, fields: list[dict[str, Any]], label: str
+) -> None:
+    fieldnames: set[str] = set()
+    for index, field in enumerate(fields):
+        fieldname = field.get("fieldname")
+        fieldtype = field.get("fieldtype")
+        if not isinstance(fieldname, str) or not fieldname.strip():
+            message = (
+                f"Custom Field fixture ({label}) has an invalid fieldname "
+                f"at {doctype}[{index}]"
+            )
+            raise CustomFieldFixtureError(message)
+        if not isinstance(fieldtype, str) or not fieldtype.strip():
+            message = (
+                f"Custom Field fixture ({label}) has an invalid fieldtype "
+                f"for {doctype}.{fieldname}"
+            )
+            raise CustomFieldFixtureError(message)
+        if fieldname in fieldnames:
+            message = (
+                f"Custom Field fixture ({label}) defines duplicate field "
+                f"{doctype}.{fieldname}"
+            )
+            raise CustomFieldFixtureError(message)
+        fieldnames.add(fieldname)
 
 
 def _select_available_doctypes(
@@ -206,6 +224,5 @@ def _apply_custom_fields(
             _LOG_PREFIX,
             label,
         )
-        raise CustomFieldApplicationError(
-            f"Unable to apply Custom Field fixtures ({label})"
-        ) from exc
+        message = f"Unable to apply Custom Field fixtures ({label})"
+        raise CustomFieldApplicationError(message) from exc

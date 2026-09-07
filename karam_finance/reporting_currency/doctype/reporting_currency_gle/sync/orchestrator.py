@@ -27,6 +27,7 @@ from karam_finance.common.db_schema import ensure_currency_columns_capacity
 # ============================================================================
 # IMPORTS FROM SUBMODULES (relative imports within sync package)
 # ============================================================================
+from .context import InsertionContext, SyncSnapshot
 from .exchange_rates import (
     build_exchange_rate_timeline,
     validate_temporal_coverage,
@@ -89,10 +90,11 @@ __all__ = [
 # ============================================================================
 
 
-def sync_reporting_currency_entries(
+# Public sync API retains its positional calling convention.
+def sync_reporting_currency_entries(  # noqa: PLR0917
     progress_event: str,
     user: str | None = None,
-    cached_currency_coverage: dict[str, Any] | None = None,
+    cached_currency_coverage: dict[str, Any] | SyncSnapshot | None = None,
     cached_rate_timeline: list[dict[str, Any]] | None = None,
     cached_default_currency: str | None = None,
 ) -> dict[str, Any]:
@@ -108,13 +110,37 @@ def sync_reporting_currency_entries(
     Args:
         progress_event: Event name for realtime progress updates
         user: User to send realtime updates to
-        cached_currency_coverage: Pre-computed coverage from foreground (optional)
+        cached_currency_coverage: Pre-computed coverage from foreground (or a
+            ``SyncSnapshot`` carrying all cached inputs and its source cutoff)
         cached_rate_timeline: Pre-built exchange rate timeline (optional)
         cached_default_currency: Company default currency (optional)
 
     Returns stats dict with counts and timing.
     """
     start_time = time.monotonic()
+    snapshot = None
+    if isinstance(cached_currency_coverage, SyncSnapshot):
+        snapshot = cached_currency_coverage
+        cached_currency_coverage = snapshot.currency_coverage
+        cached_rate_timeline = snapshot.rate_timeline
+        cached_default_currency = snapshot.default_currency
+        sync_cutoff = snapshot.cutoff
+    else:
+        sync_cutoff = now()
+        # A cached foreground snapshot without its acquisition cutoff cannot be
+        # safely paired with a new watermark. Rebuild all cached inputs at the
+        # worker cutoff so the rate and GL reads share one coherent boundary.
+        if any(
+            cached is not None
+            for cached in (
+                cached_currency_coverage,
+                cached_rate_timeline,
+                cached_default_currency,
+            )
+        ):
+            cached_currency_coverage = None
+            cached_rate_timeline = None
+            cached_default_currency = None
     stats: dict[str, Any] = {"inserted": 0, "skipped": 0, "errors": 0, "deleted": 0}
 
     # Initial progress update
@@ -129,6 +155,9 @@ def sync_reporting_currency_entries(
     settings = validate_settings()
     reporting_currency = settings["reporting_currency"]
     last_sync_timestamp = settings["last_sync_timestamp"]
+
+    if snapshot is not None:
+        validate_snapshot_currency(snapshot, reporting_currency)
 
     # ===== PHASE 1: VALIDATION =====
     (
@@ -186,7 +215,11 @@ def sync_reporting_currency_entries(
     # ===== PHASE 5: BULK INSERTION =====
     stats.update(
         run_insertion_phase(
-            progress_event, user, rc_gle_records, gl_entries, is_incremental
+            progress_event,
+            user,
+            rc_gle_records,
+            gl_entries,
+            InsertionContext(is_incremental, sync_cutoff),
         )
     )
 
@@ -210,6 +243,26 @@ def sync_reporting_currency_entries(
 # ============================================================================
 
 
+def validate_snapshot_currency(snapshot: SyncSnapshot, reporting_currency: str) -> None:
+    """Reject cached rates whose target is unknown or no longer configured."""
+    snapshot_currency = getattr(snapshot, "reporting_currency", None)
+    if not snapshot_currency:
+        frappe.throw(
+            _(
+                "This queued sync has no target currency. Run Sync again to refresh its rates."
+            ),
+            title=_("Sync stopped: outdated snapshot"),
+        )
+    if snapshot_currency != reporting_currency:
+        frappe.throw(
+            _(
+                "Reporting currency changed from {0} to {1} after this sync was queued. "
+                "Run Sync again to refresh its rates."
+            ).format(snapshot_currency, reporting_currency),
+            title=_("Sync stopped: reporting currency changed"),
+        )
+
+
 @frappe.whitelist()
 def enqueue_reporting_currency_sync() -> dict[str, str]:
     """Queue the RC GLE sync job and return identifiers for realtime updates.
@@ -224,6 +277,11 @@ def enqueue_reporting_currency_sync() -> dict[str, str]:
             _("You do not have permission to sync Reporting Currency GLE records."),
             FrappePermissionError,
         )
+
+    # Capture the source-acquisition cutoff before any foreground reads. The
+    # background job uses this same cutoff when advancing the sync watermark;
+    # cached rate snapshots therefore cannot hide changes made after capture.
+    sync_cutoff = now()
 
     # Lightweight validation - settings only
     settings = validate_settings()
@@ -302,9 +360,13 @@ def enqueue_reporting_currency_sync() -> dict[str, str]:
         # NOTE: GL entries are NOT cached - foreground fetches lightweight
         # schema (6 fields) for temporal validation only, but background
         # needs full schema (35 fields) for processing
-        cached_currency_coverage=currency_coverage,
-        cached_rate_timeline=rate_timeline,
-        cached_default_currency=default_currency,
+        cached_currency_coverage=SyncSnapshot(
+            currency_coverage=currency_coverage,
+            rate_timeline=rate_timeline,
+            default_currency=default_currency,
+            cutoff=sync_cutoff,
+            reporting_currency=reporting_currency,
+        ),
     )
 
     return {
@@ -314,11 +376,12 @@ def enqueue_reporting_currency_sync() -> dict[str, str]:
     }
 
 
-def run_reporting_currency_sync_job(
+# Queued entry point retains its existing serialised argument contract.
+def run_reporting_currency_sync_job(  # noqa: PLR0913, PLR0917
     progress_event: str,
     done_event: str,
     user: str | None = None,
-    cached_currency_coverage: dict[str, Any] | None = None,
+    cached_currency_coverage: dict[str, Any] | SyncSnapshot | None = None,
     cached_rate_timeline: list[dict[str, Any]] | None = None,
     cached_default_currency: str | None = None,
 ) -> None:
@@ -331,7 +394,8 @@ def run_reporting_currency_sync_job(
         progress_event: Event name for realtime progress updates
         done_event: Event name for completion notification
         user: User to send realtime updates to
-        cached_currency_coverage: Pre-computed coverage from foreground (optional)
+        cached_currency_coverage: Pre-computed coverage, or a ``SyncSnapshot``
+            carrying all cached inputs and its source cutoff
         cached_rate_timeline: Pre-built exchange rate timeline (optional)
         cached_default_currency: Company default currency (optional)
     """
@@ -405,7 +469,7 @@ def run_reporting_currency_sync_job(
         if doe_result.get("success"):
             stats["doe_accounts_processed"] = doe_result.get("accounts_processed", 0)
             stats["doe_records_created"] = doe_result.get("records_created", 0)
-    except Exception:
+    except Exception:  # noqa: BLE001 - DOE failure is logged after the GL sync commits.
         doe_failed = True
         frappe.log_error(
             title="DOE Computation Failed (Post-Sync)",
@@ -421,8 +485,7 @@ def run_reporting_currency_sync_job(
                 "status": "partial_success",
                 "title": _("Sync Completed, DOE Failed"),
                 "message": _(
-                    "Reporting Currency entries were synced successfully, "
-                    "but DOE computation failed. Check the Error Log for details."
+                    "Reporting Currency entries were synced successfully, but DOE computation failed. Check the Error Log for details."
                 ),
                 **stats,
             },
@@ -506,12 +569,13 @@ def _update_rc_gle_for_renamed_gl_entry(old: str, new: str) -> None:
     )
 
 
-def on_gl_entry_rename(
+# Frappe rename hook supplies these positional arguments.
+def on_gl_entry_rename(  # noqa: PLR0917
     doc: object,
     method: str,
     old: str,
     new: str,
-    merge: bool = False,  # noqa: ARG001
+    merge: bool = False,  # noqa: V107, ARG001
 ) -> None:
     """Doc_event after_rename handler for GL Entry.
 
@@ -528,7 +592,7 @@ def on_gl_entry_rename(
     _update_rc_gle_for_renamed_gl_entry(old, new)
 
 
-def on_gle_rename_hook(newname: str, oldname: str) -> None:
+def on_gle_rename_hook(newname: str, oldname: str) -> None:  # noqa: V103 - ERPNext scheduler hook registered in hooks.py.
     """Top-level on_gle_rename hook for ERPNext's rename_temporarily_named_docs().
 
     ERPNext's scheduled job calls frappe.get_hooks("on_gle_rename") with

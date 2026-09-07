@@ -1,21 +1,10 @@
-"""Delete obsolete Reporting Currency General Ledger report."""
+"""Retain the obsolete cleanup path for migration compatibility."""
 
 from __future__ import annotations
 
-import frappe
 
-STALE_REPORT = "General Ledger (Reporting Currency)"
-
-
+# Keep this module and its dotted path callable: sites may already have this
+# patch in Patch Log, while other sites may still have it pending.  The rename
+# patch owns the transition, so this obsolete cleanup must not delete reports.
 def execute() -> None:
-    """Remove the stale report left by the previous report name."""
-    if not frappe.db.exists("Report", STALE_REPORT):
-        return
-
-    frappe.delete_doc(
-        "Report",
-        STALE_REPORT,
-        force=True,
-        ignore_permissions=True,
-    )
-    frappe.clear_cache(doctype="Report")
+    """Do nothing; the pre-sync rename patch owns report cleanup and links."""

@@ -87,7 +87,10 @@ test("Reporting TB account links open Reporting GL with exclusions", () => {
     destination = args;
   };
   report.open_reporting_ledger({ account: "Cash" });
-  assert.deepEqual(destination, ["query-report", "General Ledger (Reporting Currency)"]);
+  assert.deepEqual(destination, [
+    "query-report",
+    "General Ledger (Reporting Currency)"
+  ]);
   assert.equal(context.frappe.route_options.exclude_reporting_doe, 1);
   assert.equal(context.frappe.route_options.account[0], "Cash");
 });

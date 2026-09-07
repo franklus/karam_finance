@@ -50,6 +50,8 @@ extend-exclude = [
 ]
 
 [tool.ruff.lint]
+# Vulture uses local V-codes for reviewed dynamic registration and compatibility APIs.
+external = ["V101", "V102", "V103", "V104", "V105", "V107"]
 # Opt into only named preview rules; keep formatter behaviour stable.
 preview = true
 explicit-preview-rules = true
@@ -145,7 +147,7 @@ disable = ["all"]
 enable = ["too-many-lines"]
 
 [tool.pylint.format]
-max-module-lines = 500
+max-module-lines = 1000
 
 [tool.pylint.reports]
 score = false

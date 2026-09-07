@@ -1,7 +1,7 @@
 frappe.ui.form.on("Bank Clearance", {
   refresh(frm) {
     addPostingDateToClearanceButton(frm);
-  },
+  }
 });
 
 function addPostingDateToClearanceButton(frm) {

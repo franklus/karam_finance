@@ -40,12 +40,9 @@ def filter_out_zero_value_rows(
     for row in rows:
         if not row.get("has_value"):
             continue
-        cost_centre = str(row.get("cost_center") or "")
-        names_to_show.add(cost_centre)
-        parent = parent_by_child.get(cost_centre)
-        while parent and parent not in names_to_show:
-            names_to_show.add(parent)
-            parent = parent_by_child.get(parent)
+        _include_cost_centre_ancestors(
+            names_to_show, str(row.get("cost_center") or ""), parent_by_child
+        )
 
     return [row for row in rows if str(row.get("cost_center") or "") in names_to_show]
 
@@ -91,3 +88,13 @@ def build_net_row_from_totals(
             expense_totals[ix] or 0
         )
     return net_row
+
+
+def _include_cost_centre_ancestors(
+    names_to_show: set[str], cost_centre: str, parent_by_child: dict[str, str]
+) -> None:
+    names_to_show.add(cost_centre)
+    parent = parent_by_child.get(cost_centre)
+    while parent and parent not in names_to_show:
+        names_to_show.add(parent)
+        parent = parent_by_child.get(parent)

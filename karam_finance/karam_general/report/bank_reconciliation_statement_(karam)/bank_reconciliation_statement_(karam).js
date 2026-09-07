@@ -56,20 +56,21 @@ frappe.query_reports["Bank Reconciliation Statement (Karam)"] = {
     );
   },
   formatter(value, row, column, _data, default_formatter) {
+    const formattedColumn = { ...column };
     if (
       column.fieldname === "payment_entry" &&
       value === __("Cheques and Deposits incorrectly cleared")
     ) {
-      column.link_onclick =
+      formattedColumn.link_onclick =
         "frappe.query_reports['Bank Reconciliation Statement (Karam)'].open_utility_report()";
     } else {
-      delete column.link_onclick;
+      delete formattedColumn.link_onclick;
     }
-    const formatted = default_formatter(value, row, column, _data);
-    return alignCurrencyWithSharedHelper(
+    const formatted = default_formatter(value, row, formattedColumn, _data);
+    return window.alignCurrencyWithSharedHelper(
       "Bank Reconciliation Statement (Karam)",
       value,
-      column,
+      formattedColumn,
       formatted
     );
   },

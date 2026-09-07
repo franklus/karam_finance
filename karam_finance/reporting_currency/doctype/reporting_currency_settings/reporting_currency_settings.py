@@ -3,15 +3,39 @@
 
 """Reporting Currency Settings DocType and related utilities."""
 
-from typing import Any
+from __future__ import annotations
+
+from math import isfinite
+from typing import TYPE_CHECKING, Any
 
 import frappe
 from frappe import _
 from frappe.model.document import Document
+from frappe.utils import flt
+
+if TYPE_CHECKING:
+    from frappe.types import DF
+
+
+def validate_doe_exchange_rates(rows: list[Any]) -> None:
+    """Validate every parameter before a DOE run can replace existing entries."""
+    for row in rows:
+        rate = flt(row.exchange_rate)
+        if not isfinite(rate) or rate <= 0:
+            frappe.throw(
+                _(
+                    "Row {0}: DOE Exchange Rate must be a finite number greater than zero."
+                ).format(row.idx)
+            )
 
 
 class ReportingCurrencySettings(Document):
     """Settings for Reporting Currency module."""
+
+    rc_parameters: list[Any]
+    if TYPE_CHECKING:
+        reporting_currency: DF.Link | None
+        last_sync_timestamp: DF.Datetime | None
 
     def validate(self) -> None:
         """Validate the document before saving."""
@@ -20,11 +44,13 @@ class ReportingCurrencySettings(Document):
     def _validate_rc_parameters(self) -> None:
         """Validate the rc_parameters child table entries.
 
-        Each row must have a valid doe_posting_date.
+        Each row needs a posting date and a positive, finite exchange rate.
         Multiple rows with the same year are permitted.
         """
         if not self.rc_parameters:
             return
+
+        validate_doe_exchange_rates(self.rc_parameters)
 
         for row in self.rc_parameters:
             if not row.doe_posting_date:
@@ -33,7 +59,7 @@ class ReportingCurrencySettings(Document):
                 )
 
 
-@frappe.whitelist()
+@frappe.whitelist()  # noqa: V103 - whitelisted Settings client lookup.
 def get_accounts_under_parent(parent_account: str) -> list[dict[str, Any]]:
     """Return all descendant accounts for the selected parent account."""
     frappe.only_for("System Manager")

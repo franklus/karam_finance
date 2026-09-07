@@ -15,6 +15,7 @@ from typing import Any
 import frappe
 from frappe import _
 
+from .context import InsertionContext
 from .conversion import process_gl_entry
 from .data_fetch import (
     cleanup_orphaned_rc_gle_records,
@@ -61,7 +62,8 @@ GLE_NAME_MIN_PARTS = 4  # Minimum parts in GL Entry name (ACC-GLE-{YYYY}-{#####}
 # ============================================================================
 
 
-def run_validation_phase(
+# Retain the existing positional phase API for sync callers.
+def run_validation_phase(  # noqa: PLR0913, PLR0917
     progress_event: str,
     user: str | None,
     reporting_currency: str,
@@ -93,43 +95,9 @@ def run_validation_phase(
         Tuple of (gl_entries, default_currency, is_incremental, sync_mode,
         currency_coverage, effective_last_sync)
     """
-    # Determine sync mode based on last_sync_timestamp
-    # If timestamp exists → Incremental (fetch only modified GL entries)
-    # If NULL → Full sync (fetch all GL entries)
-    is_incremental = bool(last_sync_timestamp)
-    sync_mode = _("Incremental Sync") if is_incremental else _("Full Sync")
-    effective_last_sync = last_sync_timestamp if is_incremental else None
-
-    # If RC GLE table is empty, force a full rebuild (after cleanup/schema change)
-    if is_incremental and not frappe.db.exists(DOCTYPE_RC_GLE, {}):
-        is_incremental = False
-        effective_last_sync = None
-        sync_mode = _("Full Sync (rebuild)")
-        frappe.logger().info(
-            "RC GLE table empty but last_sync_timestamp set. "
-            "Falling back to full rebuild."
-        )
-
-    # Check if Currency Exchange records changed since last sync
-    # If exchange rates were modified, force full rebuild to ensure accuracy
-    if is_incremental and last_sync_timestamp:
-        ce_changed = frappe.db.exists(
-            DOCTYPE_CURRENCY_EXCHANGE, {"modified": [">", last_sync_timestamp]}
-        )
-        if ce_changed:
-            is_incremental = False
-            effective_last_sync = None
-            sync_mode = _("Full Sync (CE updated)")
-            frappe.logger().info(
-                "Currency Exchange records modified since last sync. "
-                "Forcing full rebuild."
-            )
-            publish_sync_progress(
-                progress_event,
-                PROGRESS_PHASE1_START,
-                _("Exchange rates updated - rebuilding all records..."),
-                user,
-            )
+    is_incremental, sync_mode, effective_last_sync = _initial_sync_mode(
+        last_sync_timestamp, progress_event, user
+    )
 
     # Fetch all GL entries with full schema (35 fields) for processing
     publish_sync_progress(
@@ -169,21 +137,7 @@ def run_validation_phase(
     if cached_default_currency is not None:
         default_currency = cached_default_currency
     else:
-        # Get company's default currency (needed for conversion)
-        company = str(gl_entries[0].get("company", ""))
-
-        # Validate all GL entries are from the same company
-        companies = {str(gle.get("company", "")) for gle in gl_entries}
-        if len(companies) > 1:
-            frappe.throw(
-                _(
-                    "GL Entries span multiple companies: {0}. Please ensure "
-                    "all GL Entries are from a single company before syncing."
-                ).format(", ".join(companies)),
-                title=_("Multi-Company Data Detected"),
-            )
-
-        default_currency = get_company_default_currency(company)
+        default_currency = _default_currency_for_entries(gl_entries)
 
     # Use cached currency coverage if available, otherwise validate
     if cached_currency_coverage is not None:
@@ -220,7 +174,8 @@ def run_validation_phase(
 # ============================================================================
 
 
-def run_deletion_phase(
+# Retain the existing positional phase API for sync callers.
+def run_deletion_phase(  # noqa: PLR0917
     progress_event: str,
     user: str | None,
     last_sync_timestamp: str | None,
@@ -287,7 +242,8 @@ def run_deletion_phase(
 # ============================================================================
 
 
-def run_temporal_reconciliation_phase(
+# Retain the existing positional phase API for sync callers.
+def run_temporal_reconciliation_phase(  # noqa: PLR0913, PLR0917
     progress_event: str,
     user: str | None,
     gl_entries: list[dict[str, Any]],
@@ -356,7 +312,8 @@ def run_temporal_reconciliation_phase(
 # ============================================================================
 
 
-def run_conversion_phase(
+# Retain the existing positional phase API for sync callers.
+def run_conversion_phase(  # noqa: PLR0913, PLR0917
     progress_event: str,
     user: str | None,
     gl_entries: list[dict[str, Any]],
@@ -427,12 +384,13 @@ def run_conversion_phase(
 # ============================================================================
 
 
-def run_insertion_phase(
+# Retain the existing positional phase API for sync callers.
+def run_insertion_phase(  # noqa: PLR0917
     progress_event: str,
     user: str | None,
     rc_gle_records: list[dict[str, Any]],
     gl_entries: list[dict[str, Any]],
-    is_incremental: bool,
+    insertion_context: InsertionContext,
 ) -> dict[str, int]:
     """Phase 5: Bulk Insertion.
 
@@ -443,11 +401,15 @@ def run_insertion_phase(
         user: User ID for realtime messaging
         rc_gle_records: List of RC GLE records ready for insertion
         gl_entries: Original GL Entry records (for incremental deletion)
-        is_incremental: Whether this is an incremental sync
+        insertion_context: Sync mode paired with its safe source-acquisition
+            cutoff.
 
     Returns:
         stats: Dict with inserted count
     """
+    sync_cutoff = insertion_context.cutoff
+    is_incremental = insertion_context.is_incremental
+
     stats = {"inserted": 0}
 
     publish_sync_progress(
@@ -462,43 +424,7 @@ def run_insertion_phase(
         # Incremental: Delete only RC GLE records for GL entries being updated
         gl_entry_names = [gle.get("name") for gle in gl_entries]
         if gl_entry_names:
-            # Chunk deletions to avoid MySQL max_allowed_packet issues
-            # Large DELETE IN queries can exceed packet size limit (default 64MB)
-            chunk_size = 10000  # Safe for all MySQL configs
-            total_deleted = 0
-
-            for i in range(0, len(gl_entry_names), chunk_size):
-                chunk = gl_entry_names[i : i + chunk_size]
-                placeholders = ", ".join(["%s"] * len(chunk))
-                frappe.db.sql(
-                    f"DELETE FROM `tabReporting Currency GLE` "  # noqa: S608
-                    f"WHERE gl_entry IN ({placeholders})",
-                    tuple(chunk),
-                )
-                total_deleted += len(chunk)
-
-                # Update progress for large deletes
-                if len(gl_entry_names) > chunk_size:
-                    progress_pct = (
-                        int((total_deleted / len(gl_entry_names)) * 3)
-                        + PROGRESS_PHASE4_START
-                    )
-                    total = len(gl_entry_names)
-                    publish_sync_progress(
-                        progress_event,
-                        progress_pct,
-                        f"Deleting existing records... ({total_deleted}/{total})",
-                        user,
-                    )
-
-            publish_sync_progress(
-                progress_event,
-                PROGRESS_PHASE4_DELETE,
-                _("Deleted {0} existing RC GLE records for update...").format(
-                    len(gl_entry_names)
-                ),
-                user,
-            )
+            _delete_incremental_records(gl_entry_names, progress_event, user)
     else:
         # Full sync: Delete sync-generated records only (preserve manual_entry=1)
         frappe.db.sql(
@@ -523,72 +449,14 @@ def run_insertion_phase(
 
     # Bulk insert - use efficient bulk operation with chunking to reduce memory
     if rc_gle_records:
-        # Process in chunks to avoid holding double memory (dicts + lists)
-        # For 100K records: reduces peak memory from ~359 MB to ~36 MB per chunk
-        chunk_size = 10000
-        total_inserted = 0
-
-        # Get field list from first record
-        fieldnames = [k for k in rc_gle_records[0] if k != "doctype"]
-
-        for chunk_start in range(0, len(rc_gle_records), chunk_size):
-            chunk_end = min(chunk_start + chunk_size, len(rc_gle_records))
-            chunk = rc_gle_records[chunk_start:chunk_end]
-
-            # Pre-generate names for this chunk
-            for record in chunk:
-                gl_entry_name = record.get("gl_entry")  # e.g., "ACC-GLE-2021-00005"
-
-                if gl_entry_name:
-                    # Extract year and number from GL Entry name
-                    parts = gl_entry_name.split("-")
-                    if len(parts) >= GLE_NAME_MIN_PARTS:
-                        # Extract year (parts[2]) and number (parts[3])
-                        year = parts[2]
-                        number = parts[3]
-                        record["name"] = f"KE-RCGLE-{year}-{number}"
-                    else:
-                        # For hash-based GL Entry names (e.g., "f55e844ed1"),
-                        # prefix with RC- for deterministic 1:1 mapping
-                        record["name"] = f"RC-{gl_entry_name}"
-                else:
-                    # Should never happen - gl_entry is required field
-                    frappe.throw(
-                        _("GL Entry name is missing for record during RC GLE sync")
-                    )
-
-            # Convert chunk to values list (released after insert)
-            chunk_values = []
-            for record in chunk:
-                row_values = [record.get(field) for field in fieldnames]
-                chunk_values.append(row_values)
-
-            # Bulk insert this chunk
-            frappe.db.bulk_insert(
-                DOCTYPE_RC_GLE, fields=fieldnames, values=chunk_values
-            )
-
-            total_inserted += len(chunk)
-
-            # Update progress for large inserts
-            if len(rc_gle_records) > chunk_size:
-                progress_pct = PROGRESS_PHASE4_INSERT + int(
-                    (total_inserted / len(rc_gle_records)) * 5
-                )
-                publish_sync_progress(
-                    progress_event,
-                    progress_pct,
-                    f"Inserting records... ({total_inserted}/{len(rc_gle_records)})",
-                    user,
-                )
-
-            # chunk_values released here for garbage collection
-
-        stats["inserted"] = total_inserted
+        stats["inserted"] = _insert_rc_gle_records(rc_gle_records, progress_event, user)
 
     # Update last sync timestamps for incremental sync
     # Both timestamps updated atomically to track GL Entry and Currency Exchange changes
-    current_time = frappe.utils.now()
+    # The watermark must represent the start of source acquisition, rather than
+    # completion. A row modified while this run is reading or inserting data is
+    # therefore still selected by the next incremental query.
+    current_time = sync_cutoff
     frappe.db.set_single_value(
         DOCTYPE_RC_SETTINGS,
         {"last_sync_timestamp": current_time, "last_ce_sync_timestamp": current_time},
@@ -598,3 +466,176 @@ def run_insertion_phase(
     # NOTE: No commit here - orchestrator handles transaction commit/rollback
 
     return stats
+
+
+def _default_currency_for_entries(gl_entries: list[dict[str, Any]]) -> str:
+    # Get company's default currency (needed for conversion)
+    company = str(gl_entries[0].get("company", ""))
+
+    # Validate all GL entries are from the same company
+    companies = {str(gle.get("company", "")) for gle in gl_entries}
+    if len(companies) > 1:
+        frappe.throw(
+            _(
+                "GL Entries span multiple companies: {0}. Please ensure "
+                "all GL Entries are from a single company before syncing."
+            ).format(", ".join(companies)),
+            title=_("Multi-Company Data Detected"),
+        )
+
+    return get_company_default_currency(company)
+
+
+def _initial_sync_mode(
+    last_sync_timestamp: str | None, progress_event: str, user: str | None
+) -> tuple[bool, str, str | None]:
+    # Determine sync mode based on last_sync_timestamp
+    # If timestamp exists → Incremental (fetch only modified GL entries)
+    # If NULL → Full sync (fetch all GL entries)
+    is_incremental = bool(last_sync_timestamp)
+    sync_mode = _("Incremental Sync") if is_incremental else _("Full Sync")
+    effective_last_sync = last_sync_timestamp if is_incremental else None
+
+    # If RC GLE table is empty, force a full rebuild (after cleanup/schema change)
+    if is_incremental and not frappe.db.exists(DOCTYPE_RC_GLE, {}):
+        is_incremental = False
+        effective_last_sync = None
+        sync_mode = _("Full Sync (rebuild)")
+        frappe.logger().info(
+            "RC GLE table empty but last_sync_timestamp set. "
+            "Falling back to full rebuild."
+        )
+
+    # Check if Currency Exchange records changed since last sync
+    # If exchange rates were modified, force full rebuild to ensure accuracy
+    if is_incremental and last_sync_timestamp:
+        ce_changed = frappe.db.exists(
+            DOCTYPE_CURRENCY_EXCHANGE, {"modified": [">", last_sync_timestamp]}
+        )
+        if ce_changed:
+            is_incremental = False
+            effective_last_sync = None
+            sync_mode = _("Full Sync (CE updated)")
+            frappe.logger().info(
+                "Currency Exchange records modified since last sync. "
+                "Forcing full rebuild."
+            )
+            publish_sync_progress(
+                progress_event,
+                PROGRESS_PHASE1_START,
+                _("Exchange rates updated - rebuilding all records..."),
+                user,
+            )
+
+    return is_incremental, sync_mode, effective_last_sync
+
+
+def _assign_rc_gle_name(record: dict[str, Any]) -> None:
+    gl_entry_name = record.get("gl_entry")  # e.g., "ACC-GLE-2021-00005"
+
+    if gl_entry_name:
+        # Extract year and number from GL Entry name
+        parts = gl_entry_name.split("-")
+        if len(parts) >= GLE_NAME_MIN_PARTS:
+            # Extract year (parts[2]) and number (parts[3])
+            year = parts[2]
+            number = parts[3]
+            record["name"] = f"KE-RCGLE-{year}-{number}"
+        else:
+            # For hash-based GL Entry names (e.g., "f55e844ed1"),
+            # prefix with RC- for deterministic 1:1 mapping
+            record["name"] = f"RC-{gl_entry_name}"
+    else:
+        # Should never happen - gl_entry is required field
+        frappe.throw(_("GL Entry name is missing for record during RC GLE sync"))
+
+
+def _insert_rc_gle_records(
+    rc_gle_records: list[dict[str, Any]], progress_event: str, user: str | None
+) -> int:
+    # Process in chunks to avoid holding double memory (dicts + lists)
+    # For 100K records: reduces peak memory from ~359 MB to ~36 MB per chunk
+    chunk_size = 10000
+    total_inserted = 0
+
+    # Get field list from first record
+    fieldnames = [k for k in rc_gle_records[0] if k != "doctype"]
+
+    for chunk_start in range(0, len(rc_gle_records), chunk_size):
+        chunk_end = min(chunk_start + chunk_size, len(rc_gle_records))
+        chunk = rc_gle_records[chunk_start:chunk_end]
+
+        # Pre-generate names for this chunk
+        chunk_values = _prepare_insert_chunk(chunk, fieldnames)
+
+        # Bulk insert this chunk
+        frappe.db.bulk_insert(DOCTYPE_RC_GLE, fields=fieldnames, values=chunk_values)
+
+        total_inserted += len(chunk)
+
+        # Update progress for large inserts
+        if len(rc_gle_records) > chunk_size:
+            progress_pct = PROGRESS_PHASE4_INSERT + int(
+                (total_inserted / len(rc_gle_records)) * 5
+            )
+            publish_sync_progress(
+                progress_event,
+                progress_pct,
+                f"Inserting records... ({total_inserted}/{len(rc_gle_records)})",
+                user,
+            )
+
+        # chunk_values released here for garbage collection
+
+    return total_inserted
+
+
+def _delete_incremental_records(
+    gl_entry_names: list[Any], progress_event: str, user: str | None
+) -> None:
+    # Chunk deletions to avoid MySQL max_allowed_packet issues
+    # Large DELETE IN queries can exceed packet size limit (default 64MB)
+    chunk_size = 10000  # Safe for all MySQL configs
+    total_deleted = 0
+
+    for i in range(0, len(gl_entry_names), chunk_size):
+        chunk = gl_entry_names[i : i + chunk_size]
+        placeholders = ", ".join(["%s"] * len(chunk))
+        # Chunked parameterised DELETE, not an N+1 read.
+        # nosemgrep: frappe-n-plus-one-read-in-loop
+        frappe.db.sql(
+            f"DELETE FROM `tabReporting Currency GLE` "  # noqa: S608
+            f"WHERE gl_entry IN ({placeholders})",
+            tuple(chunk),
+        )
+        total_deleted += len(chunk)
+
+        # Update progress for large deletes
+        if len(gl_entry_names) > chunk_size:
+            progress_pct = (
+                int((total_deleted / len(gl_entry_names)) * 3) + PROGRESS_PHASE4_START
+            )
+            total = len(gl_entry_names)
+            publish_sync_progress(
+                progress_event,
+                progress_pct,
+                f"Deleting existing records... ({total_deleted}/{total})",
+                user,
+            )
+
+    publish_sync_progress(
+        progress_event,
+        PROGRESS_PHASE4_DELETE,
+        _("Deleted {0} existing RC GLE records for update...").format(
+            len(gl_entry_names)
+        ),
+        user,
+    )
+
+
+def _prepare_insert_chunk(
+    chunk: list[dict[str, Any]], fieldnames: list[str]
+) -> list[list[Any]]:
+    for record in chunk:
+        _assign_rc_gle_name(record)
+    return [[record.get(field) for field in fieldnames] for record in chunk]

@@ -6,13 +6,23 @@ currency precision, hash generation, and CSV export operations.
 
 from __future__ import annotations
 
+import csv
 import hashlib
-from typing import Any
+import logging
+import math
+from io import StringIO
+from typing import TYPE_CHECKING, Any, cast
 
 import frappe
 from frappe import _
 from frappe.utils import formatdate
 from frappe.utils.data import cint
+
+if TYPE_CHECKING:
+    # RedisWrapper is referenced by the quoted runtime-safe cast.
+    from frappe.utils.redis_wrapper import RedisWrapper  # noqa: V104
+
+_logger = logging.getLogger(__name__)
 
 # ============================================================================
 # MODULE CONSTANTS
@@ -32,7 +42,7 @@ DATE_FORMAT_DISPLAY = "dd-mm-yyyy"
 # ============================================================================
 
 
-def publish_sync_progress(
+def publish_sync_progress(  # noqa: PLR0917 - exported positional realtime callback contract.
     event: str, current: int, message: str, user: str | None = None
 ) -> None:
     """Publish sync progress to realtime event.
@@ -74,20 +84,29 @@ def get_currency_precision(currency: str) -> int:
         - BTC, ETH: 8+ decimals
     """
     try:
-        # Try to get precision from Currency doctype's fraction_units field
-        precision = frappe.db.get_value("Currency", currency, "fraction_units")
-        if precision is not None:
-            return cint(precision)
-    except Exception:  # noqa: S110
-        pass  # Silently fallback to next method
+        # Currency.fraction_units stores the smallest unit as a power of ten
+        # (100 for 2 decimals, 1000 for 3, and 1 for whole-unit currencies),
+        # rather than the number of decimal places itself.
+        fraction_units = frappe.db.get_value("Currency", currency, "fraction_units")
+        if fraction_units is not None:
+            fraction_units = cint(fraction_units)
+            if fraction_units <= 1:
+                return 0
+            return max(0, math.ceil(math.log10(fraction_units)))
+    except Exception:
+        _logger.exception(
+            "Unable to read Currency precision for %s; trying field precision", currency
+        )
 
     # Fallback: try Frappe's precision API for the RC GLE doctype field
     try:
-        precision = frappe.get_precision(DOCTYPE_RC_GLE, "reporting_debit", currency)
+        precision = frappe.get_precision(DOCTYPE_RC_GLE, "reporting_debit")
         if precision is not None:
             return cint(precision)
-    except Exception:  # noqa: S110
-        pass  # Silently fallback to default
+    except Exception:
+        _logger.exception(
+            "Unable to read reporting field precision; using two decimals"
+        )
 
     # Final fallback: standard 2 decimals
     return 2
@@ -147,9 +166,6 @@ def _generate_csv_download(
         filename_prefix: Prefix for the filename (e.g., "Temporal_Validation_Error")
         *filename_params: Additional parameters to include in filename
     """
-    import csv  # noqa: PLC0415
-    from io import StringIO  # noqa: PLC0415
-
     # Generate CSV
     csv_buffer = StringIO()
     csv_writer = csv.writer(csv_buffer)
@@ -163,12 +179,12 @@ def _generate_csv_download(
     csv_buffer.close()
 
     # Build filename with parameters
-    param_str = "_".join(str(p) for p in filename_params)
+    param_str = "_".join(filename_params)
     timestamp = frappe.utils.now_datetime().strftime("%Y%m%d_%H%M%S")
     filename = f"{filename_prefix}_{param_str}_{timestamp}.csv"
 
     frappe.local.response.filename = filename
-    frappe.local.response.filecontent = csv_content
+    frappe.local.response.filecontent = csv_content  # noqa: V101 - Frappe download response field.
     frappe.local.response.type = "download"
 
 
@@ -182,10 +198,11 @@ def export_temporal_validation_entries_csv(
     """
     frappe.only_for("System Manager")
     # Retrieve entries from cache
-    entries = frappe.cache().get_value(cache_key)
+    entries = cast("RedisWrapper", frappe.cache).get_value(cache_key)
 
     if not entries:
         frappe.throw(_("Validation data expired. Please try the sync operation again."))
+        return
 
     # Prepare CSV headers
     headers = ["GL Entry", "Posting Date", "Account", "Voucher No"]

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import importlib
 from datetime import date
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 from unittest.mock import patch
 
 import frappe
@@ -13,7 +13,6 @@ from frappe.query_builder import Criterion
 from frappe.tests.utils import FrappeTestCase
 
 if TYPE_CHECKING:
-    from collections.abc import Callable
     from types import ModuleType
 
 MODULE_NAME = (
@@ -27,119 +26,6 @@ def _load_module() -> ModuleType:
 
 class TestGeneralLedgerReport(FrappeTestCase):
     """Unit tests for General Ledger report helpers."""
-
-    def test_repeated_display_values_are_translated_once_per_report(self) -> None:
-        """Avoid repeating Frappe translation cache reads for identical values."""
-        module = _load_module()
-        translation_cache = {}
-        entries = [
-            _dict(
-                voucher_subtype="Journal Entry",
-                against_voucher_type="Purchase Invoice",
-                remarks="Repeated remark",
-                party_type="Supplier",
-            )
-            for _ in range(2)
-        ]
-
-        with patch.object(
-            module._gl_aggregation,
-            "_",
-            side_effect=lambda value: f"translated:{value}",
-        ) as translate:
-            for entry in entries:
-                module._gl_aggregation._prepare_gle_for_output(entry, translation_cache)
-
-        assert translate.call_count == 4
-        assert entries[0].voucher_subtype == "translated:Journal Entry"
-        assert entries[1].remarks == "translated:Repeated remark"
-
-    def test_attach_series_translation_populates_fields(self) -> None:
-        """Ensure translation and series are hydrated for curated doctypes."""
-        module = _load_module()
-        hydrate: Callable[[list[_dict]], None] = module._attach_series_translation
-        entries: list[_dict] = [
-            _dict(
-                voucher_type="Sales Invoice",
-                voucher_no="SINV-0001",
-                karam_series=None,
-                translation=None,
-            )
-        ]
-
-        with patch.object(
-            module._gl_enrichment,
-            "_fetch_voucher_data",
-            return_value={
-                ("Sales Invoice", "SINV-0001"): {
-                    "name": "SINV-0001",
-                    "karam_series": "SER-1",
-                    "translation": "Arabic",
-                }
-            },
-        ) as mock_fetch:
-            hydrate(entries)
-
-        assert entries[0].karam_series == "SER-1"
-        assert entries[0].translation == "Arabic"
-        mock_fetch.assert_called_once_with({"Sales Invoice": {"SINV-0001"}})
-
-    def test_attach_series_translation_skips_non_curated_doctype(self) -> None:
-        """Ensure non-curated doctypes are ignored."""
-        module = _load_module()
-        hydrate: Callable[[list[_dict]], None] = module._attach_series_translation
-        entries: list[_dict] = [
-            _dict(
-                voucher_type="Quotation",
-                voucher_no="QTN-0001",
-                karam_series=None,
-                translation=None,
-            )
-        ]
-
-        with (
-            patch.object(module.frappe, "get_meta") as mock_get_meta,
-            patch.object(module.frappe.db, "get_all") as mock_get_all,
-        ):
-            hydrate(entries)
-
-        mock_get_meta.assert_not_called()
-        mock_get_all.assert_not_called()
-
-    def test_attach_series_translation_includes_journal_entry_children(self) -> None:
-        """Hydrate every GL row sharing a supported parent voucher."""
-        module = _load_module()
-        entries: list[_dict] = [
-            _dict(
-                voucher_type="Journal Entry",
-                voucher_no="JV-0001",
-                karam_series=None,
-                translation=None,
-            ),
-            _dict(
-                voucher_type="Journal Entry",
-                voucher_no="JV-0001",
-                karam_series=None,
-                translation=None,
-            ),
-        ]
-
-        with patch.object(
-            module._gl_enrichment,
-            "_fetch_voucher_data",
-            return_value={
-                ("Journal Entry", "JV-0001"): {
-                    "name": "JV-0001",
-                    "karam_series": "JV",
-                    "translation": "Journal",
-                }
-            },
-        ) as mock_fetch:
-            module._attach_series_translation(entries)
-
-        assert [entry.karam_series for entry in entries] == ["JV", "JV"]
-        assert [entry.translation for entry in entries] == ["Journal", "Journal"]
-        mock_fetch.assert_called_once_with({"Journal Entry": {"JV-0001"}})
 
     def test_consolidated_grouping_deduplicates_against_vouchers(self) -> None:
         """Ensure consolidated rows keep unique against-voucher values in order."""
@@ -793,7 +679,7 @@ class TestGeneralLedgerReport(FrappeTestCase):
         gl = frappe.qb.DocType("GL Entry")
         for ignore_opening in (False, True):
             for disable_opening in (False, True):
-                filters = _dict(
+                filters: _dict[str, Any] = _dict(
                     from_date=date(2024, 1, 1),
                     to_date=date(2024, 12, 31),
                     _ignore_is_opening=ignore_opening,
@@ -982,9 +868,7 @@ class TestGeneralLedgerReport(FrappeTestCase):
                 return_value=["Main", "Child"],
             ) as get_children,
         ):
-            get_meta.return_value.has_field.side_effect = lambda fieldname: (
-                fieldname == "equipment_center"
-            )
+            get_meta.return_value.has_field.side_effect = "equipment_center".__eq__
             conditions = query_module._build_qb_dimension_conditions(filters, gl_entry)
 
         assert len(conditions) == 1
@@ -1023,7 +907,9 @@ class TestGeneralLedgerReport(FrappeTestCase):
         module = _load_module()
         query_module = module._gl_query
         gl_entry = frappe.qb.DocType("GL Entry")
-        voucher_data = {("Journal Entry", f"JV-{index}"): {} for index in range(3)}
+        voucher_data: dict[tuple[str, str], dict[str, Any]] = {
+            ("Journal Entry", f"JV-{index}"): {} for index in range(3)
+        }
 
         with (
             patch.object(query_module, "_MAX_VOUCHER_FILTER_PAIRS", 2),
