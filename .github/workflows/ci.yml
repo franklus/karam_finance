@@ -82,12 +82,15 @@ jobs:
         env:
           CI: "Yes"
         run: |
+          # ERPNext's recursive test fixtures include Payment Gateway.
+          bench get-app --branch version-16 https://github.com/frappe/payments.git
           bench get-app --branch version-16 https://github.com/frappe/erpnext.git
           bench get-app karam_finance "$GITHUB_WORKSPACE"
           bench setup requirements --dev
           ./env/bin/python -m pip install pytest==9.1.1
           bench new-site --db-root-password root --admin-password admin test_site
           bench --site test_site set-config allow_tests true
+          bench --site test_site install-app payments
           bench --site test_site install-app erpnext
           bench --site test_site install-app karam_finance
           bench --site test_site migrate
