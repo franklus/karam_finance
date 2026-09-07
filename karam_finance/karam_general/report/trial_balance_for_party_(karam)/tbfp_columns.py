@@ -1,7 +1,9 @@
+from typing import Any
+
 from frappe import _
 
 
-def get_columns(filters, show_party_name):
+def get_columns(filters: Any, show_party_name: Any) -> Any:
     columns = [
         {
             "fieldname": "party",

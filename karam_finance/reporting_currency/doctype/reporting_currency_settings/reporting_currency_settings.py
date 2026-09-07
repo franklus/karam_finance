@@ -33,9 +33,10 @@ class ReportingCurrencySettings(Document):
                 )
 
 
-@frappe.whitelist()  # nosemgrep — RC module, UI-controlled access
+@frappe.whitelist()
 def get_accounts_under_parent(parent_account: str) -> list[dict[str, Any]]:
     """Return all descendant accounts for the selected parent account."""
+    frappe.only_for("System Manager")
     if not parent_account:
         frappe.throw(_("Please select a parent account first."))
 

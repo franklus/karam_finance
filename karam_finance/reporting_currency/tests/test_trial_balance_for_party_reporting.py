@@ -1,4 +1,4 @@
-"""Tests for Trial Balance for Party (Reporting) helpers."""
+"""Tests for Trial Balance for Party (Reporting Currency) helpers."""
 
 from __future__ import annotations
 
@@ -13,8 +13,8 @@ if TYPE_CHECKING:
     from types import ModuleType
 
 MODULE_NAME = (
-    "karam_finance.reporting_currency.report.trial_balance_for_party_(reporting)."
-    "trial_balance_for_party_(reporting)"
+    "karam_finance.reporting_currency.report.trial_balance_for_party_(reporting_currency)."
+    "trial_balance_for_party_(reporting_currency)"
 )
 
 
@@ -23,7 +23,7 @@ def _load_module() -> ModuleType:
 
 
 class TestTrialBalanceForPartyReporting(FrappeTestCase):
-    """Regression tests for Trial Balance for Party (Reporting)."""
+    """Regression tests for Trial Balance for Party (Reporting Currency)."""
 
     def test_toggle_debit_credit_nets_values(self) -> None:
         """Only one side should remain after netting."""
@@ -65,19 +65,22 @@ class TestTrialBalanceForPartyReporting(FrappeTestCase):
             show_zero_values=1,
         )
 
+        data_module = importlib.import_module(
+            MODULE_NAME.rsplit(".", 1)[0] + ".tbfpr_data"
+        )
         with (
             patch.object(
-                module.tbfpr_data,
+                data_module,
                 "get_reporting_currency_balances",
                 return_value={},
             ),
             patch.object(
-                module.tbfpr_data.frappe,
+                data_module.frappe,
                 "get_all",
                 return_value=[{"name": "CUST-001", "customer_name": "Customer 1"}],
             ),
             patch.object(
-                module.tbfpr_data.frappe.db,
+                data_module.frappe.db,
                 "get_single_value",
                 return_value="USD",
             ),
@@ -104,19 +107,22 @@ class TestTrialBalanceForPartyReporting(FrappeTestCase):
             show_zero_values=0,
         )
 
+        data_module = importlib.import_module(
+            MODULE_NAME.rsplit(".", 1)[0] + ".tbfpr_data"
+        )
         with (
             patch.object(
-                module.tbfpr_data,
+                data_module,
                 "get_reporting_currency_balances",
                 return_value={},
             ),
             patch.object(
-                module.tbfpr_data.frappe,
+                data_module.frappe,
                 "get_all",
                 return_value=[{"name": "CUST-001", "customer_name": "Customer 1"}],
             ),
             patch.object(
-                module.tbfpr_data.frappe.db,
+                data_module.frappe.db,
                 "get_single_value",
                 return_value="USD",
             ),
@@ -136,9 +142,12 @@ class TestTrialBalanceForPartyReporting(FrappeTestCase):
             show_zero_values=1,
         )
 
+        data_module = importlib.import_module(
+            MODULE_NAME.rsplit(".", 1)[0] + ".tbfpr_data"
+        )
         with (
             patch.object(
-                module.tbfpr_data,
+                data_module,
                 "get_reporting_currency_balances",
                 return_value={
                     "CUST-002": {
@@ -150,7 +159,7 @@ class TestTrialBalanceForPartyReporting(FrappeTestCase):
                 },
             ),
             patch.object(
-                module.tbfpr_data.frappe,
+                data_module.frappe,
                 "get_all",
                 return_value=[
                     {"name": "CUST-001", "customer_name": "Customer 1"},
@@ -158,7 +167,7 @@ class TestTrialBalanceForPartyReporting(FrappeTestCase):
                 ],
             ),
             patch.object(
-                module.tbfpr_data.frappe.db,
+                data_module.frappe.db,
                 "get_single_value",
                 return_value="USD",
             ),
@@ -182,19 +191,22 @@ class TestTrialBalanceForPartyReporting(FrappeTestCase):
             show_zero_values=1,
         )
 
+        data_module = importlib.import_module(
+            MODULE_NAME.rsplit(".", 1)[0] + ".tbfpr_data"
+        )
         with (
             patch.object(
-                module.tbfpr_data,
+                data_module,
                 "get_reporting_currency_balances",
                 return_value={},
             ),
             patch.object(
-                module.tbfpr_data.frappe,
+                data_module.frappe,
                 "get_all",
                 return_value=[{"name": "CUST-001", "customer_name": ""}],
             ),
             patch.object(
-                module.tbfpr_data.frappe.db,
+                data_module.frappe.db,
                 "get_single_value",
                 return_value="EUR",
             ),
@@ -214,9 +226,12 @@ class TestTrialBalanceForPartyReporting(FrappeTestCase):
             show_zero_values=1,
         )
 
+        data_module = importlib.import_module(
+            MODULE_NAME.rsplit(".", 1)[0] + ".tbfpr_data"
+        )
         with (
             patch.object(
-                module.tbfpr_data,
+                data_module,
                 "get_reporting_currency_balances",
                 return_value={
                     "CUST-001": {
@@ -234,7 +249,7 @@ class TestTrialBalanceForPartyReporting(FrappeTestCase):
                 },
             ),
             patch.object(
-                module.tbfpr_data.frappe,
+                data_module.frappe,
                 "get_all",
                 return_value=[
                     {"name": "CUST-001", "customer_name": "Customer 1"},
@@ -242,7 +257,7 @@ class TestTrialBalanceForPartyReporting(FrappeTestCase):
                 ],
             ),
             patch.object(
-                module.tbfpr_data.frappe.db,
+                data_module.frappe.db,
                 "get_single_value",
                 return_value="USD",
             ),
@@ -269,19 +284,22 @@ class TestTrialBalanceForPartyReporting(FrappeTestCase):
             show_zero_values=1,
         )
 
+        data_module = importlib.import_module(
+            MODULE_NAME.rsplit(".", 1)[0] + ".tbfpr_data"
+        )
         with (
             patch.object(
-                module.tbfpr_data,
+                data_module,
                 "get_reporting_currency_balances",
                 return_value={},
             ),
             patch.object(
-                module.tbfpr_data.frappe,
+                data_module.frappe,
                 "get_all",
                 return_value=[],
             ),
             patch.object(
-                module.tbfpr_data.frappe.db,
+                data_module.frappe.db,
                 "get_single_value",
                 return_value="USD",
             ),

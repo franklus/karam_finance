@@ -21,18 +21,47 @@ repos:
     rev: v0.16.2
     hooks:
       - id: ruff-check
+        args: ["."]
+        pass_filenames: false
+        always_run: true
       - id: ruff-format
-        args: [--check]
-        stages: [manual]
+        args: [--check, "."]
+        pass_filenames: false
+        always_run: true
 
   - repo: local
     hooks:
+      - id: cognitive-complexity
+        name: Python cognitive complexity
+        entry: complexipy --failed
+        language: python
+        additional_dependencies: [complexipy==8.0.0]
+        pass_filenames: false
+        always_run: true
+
+      - id: module-size
+        name: Python physical module size
+        entry: pylint --rcfile=pyproject.toml karam_finance tools
+        language: python
+        additional_dependencies: [pylint==4.0.8]
+        pass_filenames: false
+        always_run: true
+
+      - id: vulture
+        name: Unused Python code candidates
+        entry: vulture
+        language: python
+        additional_dependencies: [vulture==2.16]
+        pass_filenames: false
+        always_run: true
+
       - id: pyrefly
         name: pyrefly
         entry: bash tools/run_pyrefly.sh
         language: system
         pass_filenames: false
         types: [python]
+        always_run: true
 
       - id: eslint
         name: eslint
@@ -40,6 +69,7 @@ repos:
         language: system
         pass_filenames: false
         files: \.(js|mjs|cjs)$
+        always_run: true
 
       - id: prettier
         name: prettier
@@ -47,7 +77,7 @@ repos:
         language: system
         pass_filenames: false
         files: \.(js|css|scss|vue)$
-        stages: [manual]
+        always_run: true
 
 ci:
   autoupdate_schedule: weekly

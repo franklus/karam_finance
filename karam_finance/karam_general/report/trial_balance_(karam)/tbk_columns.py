@@ -1,7 +1,9 @@
+from typing import Any
+
 from frappe import _
 
 
-def get_columns():
+def get_columns() -> Any:
     return [
         {
             "fieldname": "account",
@@ -34,6 +36,7 @@ def get_columns():
             "fieldname": "opening_debit",
             "label": _("Opening (Dr)"),
             "fieldtype": "Currency",
+            "precision": 2,
             "options": "currency",
             "width": 120,
         },
@@ -41,6 +44,7 @@ def get_columns():
             "fieldname": "opening_credit",
             "label": _("Opening (Cr)"),
             "fieldtype": "Currency",
+            "precision": 2,
             "options": "currency",
             "width": 120,
         },
@@ -48,6 +52,7 @@ def get_columns():
             "fieldname": "debit",
             "label": _("Debit"),
             "fieldtype": "Currency",
+            "precision": 2,
             "options": "currency",
             "width": 120,
         },
@@ -55,6 +60,7 @@ def get_columns():
             "fieldname": "credit",
             "label": _("Credit"),
             "fieldtype": "Currency",
+            "precision": 2,
             "options": "currency",
             "width": 120,
         },
@@ -62,6 +68,7 @@ def get_columns():
             "fieldname": "closing_debit",
             "label": _("Closing (Dr)"),
             "fieldtype": "Currency",
+            "precision": 2,
             "options": "currency",
             "width": 120,
         },
@@ -69,6 +76,7 @@ def get_columns():
             "fieldname": "closing_credit",
             "label": _("Closing (Cr)"),
             "fieldtype": "Currency",
+            "precision": 2,
             "options": "currency",
             "width": 120,
         },
@@ -76,6 +84,7 @@ def get_columns():
             "fieldname": "opening_debit_in_account_currency",
             "label": _("Opening Dr (Account Ccy)"),
             "fieldtype": "Currency",
+            "precision": 2,
             "options": "account_currency",
             "width": 140,
         },
@@ -83,6 +92,7 @@ def get_columns():
             "fieldname": "opening_credit_in_account_currency",
             "label": _("Opening Cr (Account Ccy)"),
             "fieldtype": "Currency",
+            "precision": 2,
             "options": "account_currency",
             "width": 140,
         },
@@ -90,6 +100,7 @@ def get_columns():
             "fieldname": "debit_in_account_currency",
             "label": _("Movement Dr (Account Ccy)"),
             "fieldtype": "Currency",
+            "precision": 2,
             "options": "account_currency",
             "width": 140,
         },
@@ -97,6 +108,7 @@ def get_columns():
             "fieldname": "credit_in_account_currency",
             "label": _("Movement Cr (Account Ccy)"),
             "fieldtype": "Currency",
+            "precision": 2,
             "options": "account_currency",
             "width": 140,
         },
@@ -104,6 +116,7 @@ def get_columns():
             "fieldname": "closing_debit_in_account_currency",
             "label": _("Closing Dr (Account Ccy)"),
             "fieldtype": "Currency",
+            "precision": 2,
             "options": "account_currency",
             "width": 140,
         },
@@ -111,6 +124,7 @@ def get_columns():
             "fieldname": "closing_credit_in_account_currency",
             "label": _("Closing Cr (Account Ccy)"),
             "fieldtype": "Currency",
+            "precision": 2,
             "options": "account_currency",
             "width": 140,
         },

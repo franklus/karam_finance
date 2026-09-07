@@ -12,11 +12,12 @@ search-path = [
   "../erpnext",
   "karam_finance/karam_general/report/bank_reconciliation_statement_(karam)",
   "karam_finance/karam_general/report/general_ledger_(karam)",
-  "karam_finance/karam_general/report/profit_and_loss_statement_by_cost_center",
+  "karam_finance/karam_general/report/profit_and_loss_statement_by_cost_center_(karam)",
   "karam_finance/karam_general/report/trial_balance_(karam)",
   "karam_finance/karam_general/report/trial_balance_for_party_(karam)",
-  "karam_finance/reporting_currency/report/general_ledger_(reporting)",
-  "karam_finance/reporting_currency/report/trial_balance_for_party_(reporting)",
+  "karam_finance/reporting_currency/report/general_ledger_(reporting_currency)",
+  "karam_finance/reporting_currency/report/trial_balance_(reporting_currency)",
+  "karam_finance/reporting_currency/report/trial_balance_for_party_(reporting_currency)",
 ]
 python-version = "3.14"
 python-platform = "linux"
@@ -25,8 +26,8 @@ disable-search-path-heuristics = true
 replace-imports-with-any = []
 ignore-missing-imports = []
 ignore-errors-in-generated-code = false
-preset = "default"
-baseline = "pyrefly-baseline.json"
+preset = "strict"
+# Delivery checks report all current findings; no baseline is loaded.
 min-severity = "warn"
 check-unannotated-defs = true
 infer-return-types = "checked"
@@ -35,3 +36,6 @@ permissive-ignores = false
 
 [errors]
 unused-ignore = true
+unannotated-return = true
+redundant-cast = "error"
+unnecessary-type-conversion = "error"

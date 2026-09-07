@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import Any
+
 import frappe
 from erpnext import get_company_currency, get_default_company
 from erpnext.accounts.doctype.accounting_dimension.accounting_dimension import (
@@ -10,17 +12,13 @@ from erpnext.accounts.doctype.accounting_dimension.accounting_dimension import (
 from frappe import _
 
 
-def get_columns(filters: dict) -> list[dict]:
+def get_columns(filters: dict[str, Any]) -> list[dict[str, Any]]:
     """Build column definitions for the report grid."""
-    if filters.get("company"):
-        company_currency = get_company_currency(filters["company"])
-    else:
-        company_currency = get_company_currency(get_default_company())
-
-    if filters.get("presentation_currency"):
-        currency = filters["presentation_currency"]
-    else:
-        filters["presentation_currency"] = currency = company_currency
+    company_currency = get_company_currency(
+        filters.get("company") or get_default_company()
+    )
+    currency = filters.get("presentation_currency") or company_currency
+    filters["presentation_currency"] = currency
 
     columns = [
         {
@@ -72,6 +70,7 @@ def get_columns(filters: dict) -> list[dict]:
             "label": _("Debit (Account Ccy)"),
             "fieldname": "debit_in_account_currency",
             "fieldtype": "Currency",
+            "precision": 2,
             "options": "account_currency",
             "width": 130,
         },
@@ -79,6 +78,15 @@ def get_columns(filters: dict) -> list[dict]:
             "label": _("Credit (Account Ccy)"),
             "fieldname": "credit_in_account_currency",
             "fieldtype": "Currency",
+            "precision": 2,
+            "options": "account_currency",
+            "width": 130,
+        },
+        {
+            "label": _("Balance (Account Ccy)"),
+            "fieldname": "balance_in_account_currency",
+            "fieldtype": "Currency",
+            "precision": 2,
             "options": "account_currency",
             "width": 130,
         },
@@ -86,6 +94,7 @@ def get_columns(filters: dict) -> list[dict]:
             "label": _("Debit (Company Ccy)"),
             "fieldname": "debit_in_company_currency",
             "fieldtype": "Currency",
+            "precision": 2,
             "options": "Company:company:default_currency",
             "width": 130,
         },
@@ -93,6 +102,7 @@ def get_columns(filters: dict) -> list[dict]:
             "label": _("Credit (Company Ccy)"),
             "fieldname": "credit_in_company_currency",
             "fieldtype": "Currency",
+            "precision": 2,
             "options": "Company:company:default_currency",
             "width": 130,
         },
@@ -100,6 +110,7 @@ def get_columns(filters: dict) -> list[dict]:
             "label": _("Balance (Company Ccy)"),
             "fieldname": "balance_in_company_currency",
             "fieldtype": "Currency",
+            "precision": 2,
             "options": "Company:company:default_currency",
             "width": 130,
         },
@@ -112,6 +123,7 @@ def get_columns(filters: dict) -> list[dict]:
                     "label": _("Debit ({0})").format(currency),
                     "fieldname": "debit",
                     "fieldtype": "Currency",
+                    "precision": 2,
                     "options": "presentation_currency",
                     "width": 130,
                 },
@@ -119,6 +131,7 @@ def get_columns(filters: dict) -> list[dict]:
                     "label": _("Credit ({0})").format(currency),
                     "fieldname": "credit",
                     "fieldtype": "Currency",
+                    "precision": 2,
                     "options": "presentation_currency",
                     "width": 130,
                 },
@@ -126,6 +139,7 @@ def get_columns(filters: dict) -> list[dict]:
                     "label": _("Balance ({0})").format(currency),
                     "fieldname": "balance",
                     "fieldtype": "Currency",
+                    "precision": 2,
                     "options": "presentation_currency",
                     "width": 130,
                 },
@@ -138,6 +152,7 @@ def get_columns(filters: dict) -> list[dict]:
                 "label": _("Debit (Transaction)"),
                 "fieldname": "debit_in_transaction_currency",
                 "fieldtype": "Currency",
+                "precision": 2,
                 "width": 130,
                 "options": "transaction_currency",
             },
@@ -145,6 +160,7 @@ def get_columns(filters: dict) -> list[dict]:
                 "label": _("Credit (Transaction)"),
                 "fieldname": "credit_in_transaction_currency",
                 "fieldtype": "Currency",
+                "precision": 2,
                 "width": 130,
                 "options": "transaction_currency",
             },
@@ -197,33 +213,7 @@ def get_columns(filters: dict) -> list[dict]:
         )
 
     if filters.get("include_dimensions"):
-        columns.append(
-            {
-                "label": _("Project"),
-                "options": "Project",
-                "fieldname": "project",
-                "width": 100,
-            }
-        )
-        for dim in filters.get("_dimensions_meta") or get_accounting_dimensions(
-            as_list=False
-        ):
-            columns.append(
-                {
-                    "label": _(dim.label),
-                    "options": dim.label,
-                    "fieldname": dim.fieldname,
-                    "width": 100,
-                }
-            )
-        columns.append(
-            {
-                "label": _("Cost Center"),
-                "options": "Cost Center",
-                "fieldname": "cost_center",
-                "width": 100,
-            }
-        )
+        columns.extend(_get_dimension_columns(filters))
 
     columns.extend(
         [
@@ -251,4 +241,36 @@ def get_columns(filters: dict) -> list[dict]:
     if filters.get("show_remarks"):
         columns.extend([{"label": _("Remarks"), "fieldname": "remarks", "width": 400}])
 
+    return columns
+
+
+def _get_dimension_columns(filters: dict[str, Any]) -> list[dict[str, Any]]:
+    """Build the optional project, accounting dimension and cost centre columns."""
+    columns = []
+    columns.append(
+        {
+            "label": _("Project"),
+            "options": "Project",
+            "fieldname": "project",
+            "width": 100,
+        }
+    )
+    columns.extend(
+        {
+            "label": _(dim.label),
+            "options": dim.label,
+            "fieldname": dim.fieldname,
+            "width": 100,
+        }
+        for dim in filters.get("_dimensions_meta")
+        or get_accounting_dimensions(as_list=False)
+    )
+    columns.append(
+        {
+            "label": _("Cost Center"),
+            "options": "Cost Center",
+            "fieldname": "cost_center",
+            "width": 100,
+        }
+    )
     return columns

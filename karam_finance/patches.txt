@@ -1,4 +1,7 @@
 [pre_model_sync]
+karam_finance.patches.rename_reporting_currency_reports
+karam_finance.patches.rename_asset_depreciation_ledger_summary
+karam_finance.patches.rename_profit_and_loss_by_cost_center
 # Patches added in this section will be executed before doctypes are migrated
 # Read docs to understand patches: https://frappeframework.com/docs/v14/user/en/database-migrations
 
@@ -8,3 +11,5 @@
 # (ensure_currency_columns_capacity) which runs on every migrate for Frappe Cloud compatibility
 karam_finance.patches.backfill_gl_letter_from_je_account
 karam_finance.patches.delete_stale_general_ledger_reporting_currency_report
+karam_finance.patches.delete_stale_trial_balance_reporting_report
+karam_finance.patches.disable_general_ledger_karam_auto_total

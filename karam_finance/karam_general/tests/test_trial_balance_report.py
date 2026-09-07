@@ -33,11 +33,21 @@ def _frappe_local_context():
     frappe.local.flags = _dict(mute_messages=True, print_messages=False)
     frappe.local.message_log = []
     frappe.local.lang = "en"
-    yield
+    return
 
 
 class TestTrialBalanceReport:
     """Regression tests for split trial balance helpers."""
+
+    def test_unchecked_group_filter_is_not_defaulted_on(self) -> None:
+        module = _load_helper_module("tbk_filters")
+        for supplied, expected in ((None, 0), (0, 0), (1, 1)):
+            filters = _dict(ignore_fiscal_year=1)
+            if supplied is not None:
+                filters.show_group_accounts = supplied
+            with patch.object(module, "validate_date_range_filters"):
+                module.validate_filters(filters)
+            assert filters.show_group_accounts == expected
 
     def test_validate_filters_requires_fiscal_year_by_default(self) -> None:
         """Fiscal Year should remain mandatory unless date-range mode is enabled."""
@@ -297,7 +307,7 @@ class TestTrialBalanceReport:
                     show_net_values=1,
                 ),
                 {},
-                "USD",
+                company_currency="USD",
             )
         root_row = next(row for row in rows if row.get("account") == "Root")
         assert root_row["account_currency"] == ""

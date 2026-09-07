@@ -1,12 +1,12 @@
 from datetime import date
-from typing import cast
+from typing import Any, cast
 
 import frappe
 from frappe import _
 from frappe.utils import formatdate, getdate
 
 
-def validate_filters(filters):
+def validate_filters(filters: Any) -> Any:
     if not filters.fiscal_year:
         frappe.throw(_("Fiscal Year {0} is required").format(filters.fiscal_year))
 
@@ -38,6 +38,12 @@ def validate_filters(filters):
     if from_date > to_date:
         frappe.throw(_("From Date cannot be greater than To Date"))
 
+    _bound_dates(filters, from_date, to_date)
+
+
+def _bound_dates(filters: Any, from_date: date, to_date: date) -> None:
+    year_start_date = filters.year_start_date
+    year_end_date = filters.year_end_date
     if from_date < year_start_date or from_date > year_end_date:
         frappe.msgprint(
             _(
@@ -56,7 +62,7 @@ def validate_filters(filters):
         filters.to_date = year_end_date
 
 
-def get_party_name_field(filters):
+def get_party_name_field(filters: Any) -> Any:
     if filters.get("party_type") in ("Customer", "Supplier", "Employee", "Member"):
         return "{}_name".format(frappe.scrub(filters.get("party_type")))
     if filters.get("party_type") == "Shareholder":
@@ -64,7 +70,7 @@ def get_party_name_field(filters):
     return "name"
 
 
-def is_party_name_visible(filters):
+def is_party_name_visible(filters: Any) -> Any:
     show_party_name = False
 
     if filters.get("party_type") in ["Customer", "Supplier"]:

@@ -15,7 +15,7 @@ app_email = "repast_pesos42@icloud.com"
 app_license = "mit"
 app_include_js = [
     "currency_formatter.bundle.js",
-    "/assets/karam_finance/js/report_utils/report_table_ux.js",
+    "report_table_ux.bundle.js",
     "/assets/karam_finance/js/karam_general/item_price_on_rate_mismatch_state.js",
     "/assets/karam_finance/js/karam_general/item_price_on_rate_mismatch_prompt.js",
     "/assets/karam_finance/js/karam_general/item_price_on_rate_mismatch.js",

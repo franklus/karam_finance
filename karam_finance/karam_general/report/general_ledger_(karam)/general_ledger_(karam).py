@@ -26,6 +26,10 @@ from .gl_aggregation import (
     get_result_as_list,
 )
 from .gl_columns import get_columns
+from .gl_currency import (
+    _apply_flat_account_currency_summaries,
+    _attach_flat_account_currency_openings,
+)
 from .gl_enrichment import (
     _KARAM_FIELDS_CACHE,
     PARTY_LOOKUP_BATCH_SIZE,
@@ -56,6 +60,7 @@ from .gl_query import (
     _build_voucher_conditions,
     _get_order_by_clause,
     get_conditions,
+    get_flat_account_currency_openings,
     get_gl_entries,
 )
 
@@ -104,6 +109,7 @@ __all__ = [
     "get_columns",
     "get_conditions",
     "get_data_with_opening_closing",
+    "get_flat_account_currency_openings",
     "get_gl_entries",
     "get_party_name_map",
     "get_result",
@@ -114,7 +120,9 @@ __all__ = [
 ]
 
 
-def execute(filters: Any | None = None) -> tuple[list[dict], list[dict]]:
+def execute(
+    filters: Any | None = None,
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
     """Execute the General Ledger (Karam) report."""
     if not filters:
         return [], []
@@ -126,9 +134,10 @@ def execute(filters: Any | None = None) -> tuple[list[dict], list[dict]]:
     ):
         frappe.throw(_("Select an account to print in account currency"))
 
-    if filters.get("party"):
-        if not isinstance(filters.get("party"), (list, tuple, set)):
-            filters.party = frappe.parse_json(filters.get("party"))
+    if filters.get("party") and not isinstance(
+        filters.get("party"), (list, tuple, set)
+    ):
+        filters.party = frappe.parse_json(filters.get("party"))
 
     account_details = _get_account_details(filters)
 
@@ -144,7 +153,7 @@ def execute(filters: Any | None = None) -> tuple[list[dict], list[dict]]:
     return columns, data
 
 
-def _get_account_details(filters: Any) -> dict[str, frappe._dict]:
+def _get_account_details(filters: Any) -> dict[str, frappe._dict[str, Any]]:
     """Fetch only accounts needed for validation, with an explicit bound."""
     accounts = filters.get("account")
     if not accounts:
@@ -164,7 +173,7 @@ def _get_account_details(filters: Any) -> dict[str, frappe._dict]:
     return {row.name: row for row in rows}
 
 
-def get_result(filters: Any) -> list[dict]:
+def get_result(filters: Any) -> list[dict[str, Any]]:
     """Orchestrate GL data retrieval and processing."""
     accounts_settings = frappe.get_cached_doc("Accounts Settings")
     filters["_remarks_length"] = (
@@ -174,11 +183,17 @@ def get_result(filters: Any) -> list[dict]:
         "ignore_is_opening_check_for_reporting"
     )
 
-    accounting_dimensions = []
+    accounting_dimensions: list[str] = []
     if filters.get("include_dimensions"):
         accounting_dimensions = get_accounting_dimensions()
         filters["_dimensions_meta"] = get_accounting_dimensions(as_list=False)
 
-    gl_entries = get_gl_entries(filters, accounting_dimensions)
+    gl_entries = get_gl_entries(
+        filters, accounting_dimensions, enrich_opening_entries=False
+    )
     data = get_data_with_opening_closing(filters, accounting_dimensions, gl_entries)
+    if filters.get("categorize_by") == "Flat Chronological":
+        openings = get_flat_account_currency_openings(filters)
+        _apply_flat_account_currency_summaries(data, openings)
+        _attach_flat_account_currency_openings(data, openings)
     return get_result_as_list(data, filters)

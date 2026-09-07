@@ -1,33 +1,7 @@
 const assert = require("node:assert/strict");
-const fs = require("node:fs");
-const path = require("node:path");
 const test = require("node:test");
 
 const tableUX = require("../../karam_finance/public/js/report_utils/report_table_ux.js");
-
-const REPORT_SCRIPTS = [
-  "karam_general/report/asset_depreciation_ledger_summary/asset_depreciation_ledger_summary.js",
-  "karam_general/report/bank_reconciliation_statement_(karam)/bank_reconciliation_statement_(karam).js",
-  "karam_general/report/profit_and_loss_statement_by_cost_center/profit_and_loss_statement_by_cost_center.js",
-  "karam_general/report/trial_balance_(karam)/trial_balance_(karam).js",
-  "karam_general/report/trial_balance_for_party_(karam)/trial_balance_for_party_(karam).js",
-  "reporting_currency/report/general_ledger_(reporting)/general_ledger_(reporting).js",
-  "reporting_currency/report/trial_balance_for_party_(reporting)/trial_balance_for_party_(reporting).js",
-  "reporting_currency/report/trial_balance_reporting/trial_balance_reporting.js"
-];
-
-const TREE_REPORT_SCRIPTS = [
-  "karam_general/report/profit_and_loss_statement_by_cost_center/profit_and_loss_statement_by_cost_center.js",
-  "karam_general/report/trial_balance_(karam)/trial_balance_(karam).js",
-  "reporting_currency/report/trial_balance_reporting/trial_balance_reporting.js"
-];
-
-function readReportSource(relativePath) {
-  return fs.readFileSync(
-    path.resolve(__dirname, "../../karam_finance", relativePath),
-    "utf8"
-  );
-}
 
 test("shared report widths preserve options and derive widths from current data", () => {
   const options = {
@@ -247,26 +221,57 @@ test("non-GL reports can exclude deterministic trailing total rows", () => {
     globalThis.frappe = originalFrappe;
   }
 });
-test("custom report scripts use shared table UX hooks", () => {
-  for (const relativePath of REPORT_SCRIPTS) {
-    const source = readReportSource(relativePath);
-    assert.match(
-      source,
-      /applyCurrentReportColumnWidths\(options(?:,|\))/,
-      relativePath
-    );
-    assert.match(
-      source,
-      /after_datatable_render[\s\S]*refreshCurrentReportColumnWidths/,
-      relativePath
-    );
-    assert.doesNotMatch(source, /karam-gl-pagination|data-karam-gl-page/, relativePath);
-  }
-  for (const relativePath of TREE_REPORT_SCRIPTS) {
-    assert.match(
-      readReportSource(relativePath),
-      /removeTreeFooter\(report\)/,
-      relativePath
-    );
+
+test("native serial width survives DataTable dimension resets", () => {
+  const serialColumn = { id: "_rowIndex", colIndex: 0, width: 30 };
+  const datatable = {
+    datamanager: { getColumnById: () => serialColumn },
+    style: { getRowIndexColumnWidth: () => 30 }
+  };
+  tableUX.applySerialNumberColumnWidth(datatable, 168);
+  // DataTable's setupColumnWidth runs again on deferred tree row redraws.
+  serialColumn.width = datatable.style.getRowIndexColumnWidth();
+  assert.equal(serialColumn.width, 52);
+  tableUX.applySerialNumberColumnWidth(datatable, 1000);
+  serialColumn.width = datatable.style.getRowIndexColumnWidth();
+  assert.equal(serialColumn.width, 60);
+});
+
+test("currency widths measure formatted amounts and cache by row currency", () => {
+  const originalFrappe = globalThis.frappe;
+  const calls = [];
+  globalThis.frappe = {
+    meta: { get_field_currency: (column, row) => row[column.options] },
+    form: {
+      formatters: {
+        Currency(value, column, options, row) {
+          calls.push([value, column.precision, options.only_value, row.currency]);
+          return `${row.currency} ${Number(value).toLocaleString("en-US", {
+            minimumFractionDigits: column.precision,
+            maximumFractionDigits: column.precision
+          })}`;
+        }
+      }
+    }
+  };
+  try {
+    const rows = [
+      { debit: 1830000000, currency: "L.L" },
+      { debit: 1830000000, currency: "L.L" },
+      { debit: 1830000000, currency: "USD" },
+      { debit: null, currency: "USD" }
+    ];
+    const columns = [
+      { fieldname: "debit", fieldtype: "Currency", options: "currency", precision: 2 }
+    ];
+    const [column] = tableUX.calculateColumnWidths(columns, rows, {
+      measureText: (value) => String(value).length * 8
+    });
+    assert.equal(column.width, "L.L 1,830,000,000.00".length * 8 + 32 + 20);
+    assert.equal(calls.length, 2);
+    assert.deepEqual(calls[0], [1830000000, 2, true, "L.L"]);
+    assert.equal(rows[0].debit, 1830000000);
+  } finally {
+    globalThis.frappe = originalFrappe;
   }
 });

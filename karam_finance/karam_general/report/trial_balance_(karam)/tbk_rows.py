@@ -48,9 +48,7 @@ def calculate_total_row(
     account_currency_totals = dict.fromkeys(ACCOUNT_CCY_VALUE_FIELDS, 0.0)
     account_currencies = set()
     for account in accounts:
-        if show_group_accounts and account.parent_account:
-            continue
-        if not show_group_accounts and account.get("is_group"):
+        if not _include_in_total(account, show_group_accounts):
             continue
         for field in VALUE_FIELDS:
             total_row[field] += flt(account.get(field, 0))
@@ -64,13 +62,13 @@ def calculate_total_row(
             {field: flt(value) for field, value in account_currency_totals.items()}
         )
     else:
-        total_row.update({field: None for field in ACCOUNT_CCY_VALUE_FIELDS})
+        total_row.update(dict.fromkeys(ACCOUNT_CCY_VALUE_FIELDS))
 
     return total_row
 
 
 def prepare_data(
-    accounts: Any, filters: Any, parent_children_map: Any, company_currency: Any
+    accounts: Any, filters: Any, _parent_children_map: Any, *, company_currency: Any
 ) -> list[dict[str, Any]]:
     data = []
     show_group_accounts = filters.get("show_group_accounts")
@@ -83,7 +81,6 @@ def prepare_data(
             if account.get("account_currency"):
                 prepare_account_currency_opening_closing(account)
 
-        has_value = False
         row: dict[str, Any] = {
             "account": account.name,
             "parent_account": account.parent_account,
@@ -103,18 +100,7 @@ def prepare_data(
             ),
         }
 
-        for key in VALUE_FIELDS + ACCOUNT_CCY_VALUE_FIELDS:
-            value = account.get(key)
-            row[key] = flt(value, 3) if value is not None else None
-
-            if (
-                key in VALUE_FIELDS
-                and row[key] is not None
-                and abs(row[key]) >= get_zero_cutoff(company_currency)
-            ):
-                has_value = True
-
-        row["has_value"] = has_value
+        _set_row_values(row, account, company_currency)
         data.append(row)
 
     if not show_group_accounts:
@@ -129,5 +115,57 @@ def prepare_data(
     return data
 
 
-def _hide_group_accounts(data):
+def filter_out_zero_value_rows(
+    data: list[dict[str, Any]],
+    parent_children_map: dict[str | None, list[dict[str, Any]]],
+    show_zero_values: bool = False,
+) -> list[dict[str, Any]]:
+    """Keep valued accounts and their ancestors without rescanning the tree."""
+    if show_zero_values:
+        return list(data)
+
+    parents = {
+        child["name"]: parent
+        for parent, children in parent_children_map.items()
+        for child in children
+    }
+    accounts_to_show = set()
+    for row in data:
+        if not row.get("has_value"):
+            continue
+        account = row.get("account")
+        while account not in accounts_to_show:
+            accounts_to_show.add(account)
+            account = parents.get(account)
+            if not account:
+                break
+
+    return [row for row in data if row.get("account") in accounts_to_show]
+
+
+def _hide_group_accounts(data: Any) -> Any:
     return [dict(row, indent=0) for row in data if not row.get("is_group_account")]
+
+
+def _include_in_total(account: Any, show_group_accounts: Any) -> bool:
+    return (
+        not account.parent_account
+        if show_group_accounts
+        else not account.get("is_group")
+    )
+
+
+def _set_row_values(row: dict[str, Any], account: Any, company_currency: Any) -> None:
+    has_value = False
+    for key in VALUE_FIELDS + ACCOUNT_CCY_VALUE_FIELDS:
+        value = account.get(key)
+        row[key] = flt(value) if value is not None else None
+
+        if (
+            key in VALUE_FIELDS
+            and row[key] is not None
+            and abs(row[key]) >= get_zero_cutoff(company_currency)
+        ):
+            has_value = True
+
+    row["has_value"] = has_value

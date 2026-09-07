@@ -63,7 +63,7 @@ module.exports = defineConfig([
           properties: "never"
         }
       ],
-      complexity: ["error", 10],
+      complexity: ["error", 7],
       "consistent-return": "error",
       curly: ["error", "all"],
       "default-case-last": "error",
@@ -78,7 +78,7 @@ module.exports = defineConfig([
         { max: 60, skipBlankLines: true, skipComments: true, IIFEs: true }
       ],
       "max-nested-callbacks": ["error", 3],
-      "max-params": ["error", 6],
+      "max-params": ["error", 5],
       "max-statements": ["error", 25],
       "no-alert": "error",
       "no-await-in-loop": "error",
@@ -167,6 +167,10 @@ module.exports = defineConfig([
     }
   },
   {
+    files: ["karam_finance/public/js/report_utils/report_table_ux.bundle.js"],
+    languageOptions: { sourceType: "module" }
+  },
+  {
     files: ["**/*.cjs"],
     languageOptions: {
       ecmaVersion: 2024,
@@ -181,18 +185,8 @@ module.exports = defineConfig([
       globals: globals.node
     },
     rules: {
-      complexity: ["error", 15],
-      "max-depth": ["error", 4],
-      "max-lines-per-function": [
-        "error",
-        { max: 100, skipBlankLines: true, skipComments: true, IIFEs: true }
-      ],
-      "max-nested-callbacks": ["error", 4],
-      "max-params": ["error", 8],
-      "max-statements": ["error", 50],
       "no-console": "off",
       "sonarjs/code-eval": "off",
-      "sonarjs/cognitive-complexity": ["error", 15],
       "sonarjs/no-empty-test-file": "off"
     }
   }

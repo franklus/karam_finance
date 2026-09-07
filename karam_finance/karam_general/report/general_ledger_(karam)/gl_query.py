@@ -9,7 +9,9 @@ v16 permission conditions without assembling SQL fragments from filters.
 from __future__ import annotations
 
 import re
-from typing import TYPE_CHECKING
+from datetime import date
+from operator import itemgetter
+from typing import Any, cast
 
 import frappe
 from erpnext.accounts.doctype.accounting_dimension.accounting_dimension import (
@@ -20,10 +22,14 @@ from erpnext.accounts.report.financial_statements import get_cost_centers_with_c
 from erpnext.accounts.report.utils import convert_to_presentation_currency, get_currency
 from frappe import _
 from frappe.database.query import RawCriterion
+from frappe.desk.reportview import build_match_conditions
 from frappe.query_builder import Criterion, NullValue
-from frappe.query_builder.functions import Substring
-from frappe.utils import cstr
+from frappe.query_builder.functions import Abs, Coalesce, Min, NullIf, Substring, Sum
+from frappe.utils import cstr, flt, getdate
+from pypika.queries import QueryBuilder, Table
+from pypika.terms import Term
 
+from .gl_aggregation import _is_opening_entry, _is_report_entry
 from .gl_enrichment import (
     _attach_series_translation,
     _get_voucher_data_for_filters,
@@ -31,17 +37,17 @@ from .gl_enrichment import (
 )
 from .gl_filters import get_accounts_with_children
 
-if TYPE_CHECKING:
-    pass
-
 _IDENTIFIER = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 _MAX_LOOKUP_VALUES = 100_000
 _MAX_VOUCHER_FILTER_PAIRS = 10_000
 
 
 def get_gl_entries(
-    filters: dict, accounting_dimensions: list[str]
-) -> list[frappe._dict]:
+    filters: dict[str, Any],
+    accounting_dimensions: list[str],
+    *,
+    enrich_opening_entries: bool = True,
+) -> list[frappe._dict[str, Any]]:
     """Fetch the ledger rows required by the requested report.
 
     The GL table is the only row source for the report. Karam fields are
@@ -66,7 +72,8 @@ def get_gl_entries(
         accounting_dimensions,
         include_karam_fields=False,
     )
-    query = frappe.qb.from_(gl).select(*fields)
+    account = frappe.qb.DocType("Account")
+    query = frappe.qb.from_(gl).left_join(account).on(gl.account == account.name)
 
     if filters.get("karam_series") or filters.get("translation"):
         voucher_data = _get_voucher_data_for_filters(filters)
@@ -77,40 +84,139 @@ def get_gl_entries(
     # returns a framework-owned condition; retaining it as a RawCriterion
     # preserves the exact v16 report permission contract without interpolating
     # any report value or identifier.
-    from frappe.desk.reportview import build_match_conditions
-
     if match_conditions := build_match_conditions("GL Entry"):
         criteria.append(RawCriterion(f"({match_conditions})"))
     query = query.where(Criterion.all(criteria))
-    query = _apply_order_by(query, gl, filters)
-    gl_entries = query.run(as_dict=True)
+    if not enrich_opening_entries and _can_compact_account_history(
+        filters, currency_map
+    ):
+        gl_entries = _get_entries_with_compact_history(
+            query, gl, filters, fields=fields
+        )
+    else:
+        gl_entries = _apply_order_by(query.select(*fields), gl, filters).run(
+            as_dict=True
+        )
     filters["_bill_no_joined"] = False
 
-    party_name_map = (
-        get_party_name_map(gl_entries) if _should_attach_party_names(filters) else {}
+    enrichment_entries = (
+        gl_entries
+        if enrich_opening_entries
+        else _get_display_entries(gl_entries, filters)
     )
-    for gl_entry in gl_entries:
-        if party_name_map and gl_entry.party_type and gl_entry.party:
-            gl_entry.party_name = party_name_map.get(gl_entry.party_type, {}).get(
-                gl_entry.party
-            )
-        gl_entry.debit_in_company_currency = gl_entry.debit
-        gl_entry.credit_in_company_currency = gl_entry.credit
+    party_name_map = (
+        get_party_name_map(enrichment_entries)
+        if _should_attach_party_names(filters)
+        else {}
+    )
+    _prepare_currency_values(gl_entries, party_name_map)
 
     if filters.get("presentation_currency"):
         gl_entries = convert_to_presentation_currency(gl_entries, currency_map, filters)
 
-    _attach_series_translation(gl_entries, preloaded_voucher_data=voucher_data)
+    _attach_series_translation(enrichment_entries, preloaded_voucher_data=voucher_data)
     return gl_entries
 
 
+def _can_compact_account_history(
+    filters: dict[str, Any], currency_map: dict[str, Any]
+) -> bool:
+    """Use decimal history sums only for company-currency account grouping."""
+    return (
+        filters.get("categorize_by")
+        in ("Categorise by Account", "Group by Account w/ Opening")
+        and filters.get("presentation_currency") == currency_map["company_currency"]
+        and not any(
+            filters.get(key)
+            for key in (
+                "include_dimensions",
+                "add_values_in_transaction_currency",
+                "show_net_values_in_party_account",
+            )
+        )
+    )
+
+
+def _get_entries_with_compact_history(
+    query: QueryBuilder, gl: Table, filters: dict[str, Any], *, fields: list[Term]
+) -> list[frappe._dict[str, Any]]:
+    """Split one permission-filtered query into history sums and detailed movements."""
+    currency = _account_currency_expression(gl)
+    amount_fields = (
+        "debit",
+        "credit",
+        "debit_in_account_currency",
+        "credit_in_account_currency",
+    )
+    history = (
+        query.select(
+            gl.account,
+            currency.as_("account_currency"),
+            Min(gl.posting_date).as_("posting_date"),
+            Min(gl.creation).as_("creation"),
+            *(Sum(gl[field]).as_(field) for field in amount_fields),
+            # PyPika accepts SQL expressions here despite its narrower Sum annotation.
+            Sum(
+                cast(
+                    Any,
+                    Abs(gl.debit_in_account_currency)
+                    + Abs(gl.credit_in_account_currency),
+                )
+            ).as_("_account_currency_contribution"),
+        )
+        .where(gl.posting_date < filters["from_date"])
+        .groupby(gl.account, currency)
+        .run(as_dict=True)
+    )
+    for row in history:
+        for field in amount_fields:
+            row[field] = flt(row[field])
+        # Gross amounts can cancel, but their original currency provenance cannot.
+        row["_account_currency_contribution"] = bool(
+            row["_account_currency_contribution"]
+        )
+    movements = _apply_order_by(
+        query.select(*fields).where(gl.posting_date >= filters["from_date"]),
+        gl,
+        filters,
+    ).run(as_dict=True)
+    entries: list[frappe._dict[str, Any]] = [*history, *movements]
+    return sorted(
+        entries,
+        key=itemgetter("account", "posting_date", "creation"),
+    )
+
+
+def _get_display_entries(
+    gl_entries: list[frappe._dict[str, Any]], filters: dict[str, Any]
+) -> list[frappe._dict[str, Any]]:
+    """Use the aggregation predicates to enrich only rows shown as entries."""
+    # Required dates have already passed validate_filters at the report boundary.
+    from_date, to_date = (
+        cast(date, getdate(filters.get("from_date"))),
+        cast(date, getdate(filters.get("to_date"))),
+    )
+    show_opening = filters.get("show_opening_entries") or filters.get(
+        "_ignore_is_opening"
+    )
+    disable_opening = filters.get("disable_opening_balance_calculation")
+    return [
+        row
+        for row in gl_entries
+        if not _is_opening_entry(
+            row, from_date, show_opening, disable_opening_balance=disable_opening
+        )
+        and _is_report_entry(row, to_date, show_opening)
+    ]
+
+
 def _select_fields(
-    gl,
-    filters: dict,
+    gl: Table,
+    filters: dict[str, Any],
     accounting_dimensions: list[str],
     *,
     include_karam_fields: bool = True,
-) -> list:
+) -> list[Term]:
     """Return the static and validated dynamic GL projection."""
     fields = [
         gl.name.as_("gl_entry"),
@@ -131,7 +237,7 @@ def _select_fields(
         gl.project,
         gl.against_voucher_type,
         gl.against_voucher,
-        gl.account_currency,
+        _account_currency_expression(gl).as_("account_currency"),
         gl.against,
         gl.is_opening,
         gl.creation,
@@ -167,7 +273,9 @@ def _select_fields(
     return fields
 
 
-def _apply_order_by(query, gl, filters: dict):
+def _apply_order_by(
+    query: QueryBuilder, gl: Table, filters: dict[str, Any]
+) -> QueryBuilder:
     """Apply ERPNext v16 ordering plus Karam's chronological mode."""
     categorize_by = _canonical_categorize_by(filters.get("categorize_by"))
     if categorize_by == "Categorise by Voucher":
@@ -187,11 +295,12 @@ def _apply_order_by(query, gl, filters: dict):
 
 
 def _build_qb_conditions(
-    filters: dict,
-    gl,
-    voucher_data=None,
-    joined_voucher_conditions=None,
-) -> list:
+    filters: dict[str, Any],
+    gl: Table,
+    voucher_data: dict[tuple[str, str], dict[str, Any]] | None = None,
+    *,
+    joined_voucher_conditions: list[Criterion] | None = None,
+) -> list[Term]:
     """Build all execution criteria as Query Builder expressions."""
     conditions = [gl.company == filters.get("company")]
     conditions.extend(_build_qb_account_conditions(filters, gl))
@@ -202,13 +311,18 @@ def _build_qb_conditions(
     if not filters.get("show_cancelled_entries"):
         conditions.append(gl.is_cancelled == 0)
     conditions.extend(
-        _build_qb_karam_conditions(filters, gl, voucher_data, joined_voucher_conditions)
+        _build_qb_karam_conditions(
+            filters,
+            gl,
+            voucher_data,
+            joined_voucher_conditions=joined_voucher_conditions,
+        )
     )
     conditions.extend(_build_qb_dimension_conditions(filters, gl))
     return conditions
 
 
-def _build_qb_account_conditions(filters: dict, gl) -> list:
+def _build_qb_account_conditions(filters: dict[str, Any], gl: Table) -> list[Term]:
     conditions = []
     if filters.get("account"):
         filters["account"] = get_accounts_with_children(filters["account"])
@@ -222,7 +336,7 @@ def _build_qb_account_conditions(filters: dict, gl) -> list:
     return conditions
 
 
-def _build_qb_voucher_conditions(filters: dict, gl) -> list:
+def _build_qb_voucher_conditions(filters: dict[str, Any], gl: Table) -> list[Term]:
     conditions = []
     if filters.get("voucher_no"):
         conditions.append(gl.voucher_no == filters["voucher_no"])
@@ -236,7 +350,7 @@ def _build_qb_voucher_conditions(filters: dict, gl) -> list:
     return conditions
 
 
-def _build_qb_party_conditions(filters: dict, gl) -> list:
+def _build_qb_party_conditions(filters: dict[str, Any], gl: Table) -> list[Term]:
     conditions = []
     if _canonical_categorize_by(
         filters.get("categorize_by")
@@ -249,7 +363,7 @@ def _build_qb_party_conditions(filters: dict, gl) -> list:
     return conditions
 
 
-def _build_qb_finance_book_condition(filters: dict, gl):
+def _build_qb_finance_book_condition(filters: dict[str, Any], gl: Table) -> Criterion:
     if filters.get("include_default_book_entries"):
         if filters.get("finance_book"):
             if filters.get("company_fb") and cstr(filters["finance_book"]) != cstr(
@@ -271,8 +385,10 @@ def _build_qb_finance_book_condition(filters: dict, gl):
     return gl.finance_book.isin(finance_books) | gl.finance_book.isnull()
 
 
-def _build_qb_date_conditions(filters: dict, gl) -> list:
+def _build_qb_date_conditions(filters: dict[str, Any], gl: Table) -> list[Term]:
     """Build v16 opening-balance semantics, including its disable switch."""
+    if filters.get("_flat_account_openings"):
+        return _build_qb_flat_opening_conditions(filters, gl)
     ignore_is_opening = bool(filters.get("_ignore_is_opening"))
     from_date = filters.get("from_date")
     to_date = filters.get("to_date")
@@ -282,13 +398,15 @@ def _build_qb_date_conditions(filters: dict, gl) -> list:
         filters.get("account")
         or filters.get("party")
         or _canonical_categorize_by(filters.get("categorize_by"))
-        in ("Categorise by Account", "Categorise by Party")
+        in (
+            "Categorise by Account",
+            "Categorise by Party",
+            "Group by Account w/ Opening",
+        )
     )
     if filters.get("disable_opening_balance_calculation") or opening_aware:
         lower_bound = gl.posting_date >= from_date
-        if not ignore_is_opening and not filters.get(
-            "disable_opening_balance_calculation"
-        ):
+        if not ignore_is_opening:
             lower_bound = lower_bound | (gl.is_opening == "Yes")
         conditions.append(lower_bound)
 
@@ -300,8 +418,12 @@ def _build_qb_date_conditions(filters: dict, gl) -> list:
 
 
 def _build_qb_karam_conditions(
-    filters: dict, gl, voucher_data, joined_voucher_conditions=None
-) -> list:
+    filters: dict[str, Any],
+    gl: Table,
+    voucher_data: dict[tuple[str, str], dict[str, Any]] | None,
+    *,
+    joined_voucher_conditions: list[Criterion] | None = None,
+) -> list[Term]:
     """Build GL Letter and cross-voucher Karam filters."""
     conditions = []
     if filters.get("letter"):
@@ -316,29 +438,12 @@ def _build_qb_karam_conditions(
     if joined_voucher_conditions:
         conditions.append(Criterion.any(joined_voucher_conditions))
     elif filters.get("karam_series") or filters.get("translation"):
-        pairs = list(voucher_data or {})
-        if len(pairs) > _MAX_VOUCHER_FILTER_PAIRS:
-            frappe.throw(
-                _(
-                    "The Series or Translation filter matches too many vouchers. "
-                    "Please use a more specific filter."
-                )
-            )
-        if pairs:
-            pair_conditions = [
-                (gl.voucher_type == doctype) & (gl.voucher_no == name)
-                for doctype, name in pairs
-            ]
-            conditions.append(Criterion.any(pair_conditions))
-        else:
-            # A requested Series/Translation with no source matches is an
-            # empty result, not an unfiltered ledger.
-            conditions.append(gl.name == "")
+        conditions.append(_voucher_pair_condition(gl, voucher_data))
 
     return conditions
 
 
-def _build_qb_dimension_conditions(filters: dict, gl) -> list:
+def _build_qb_dimension_conditions(filters: dict[str, Any], gl: Table) -> list[Term]:
     """Apply only active, real GL Accounting Dimension fields."""
     conditions = []
     meta = frappe.get_meta("GL Entry")
@@ -364,7 +469,7 @@ def _build_qb_dimension_conditions(filters: dict, gl) -> list:
     return conditions
 
 
-def _get_voucher_no_not_in_query(filters: dict):
+def _get_voucher_no_not_in_query(filters: dict[str, Any]) -> QueryBuilder | None:
     """Return a lazy, unioned voucher subquery for ignore filters."""
     queries = []
     je = frappe.qb.DocType("Journal Entry")
@@ -415,7 +520,7 @@ def _valid_identifier(value: str) -> bool:
     return bool(value and _IDENTIFIER.fullmatch(value))
 
 
-def _safe_positive_int(value) -> int:
+def _safe_positive_int(value: str | int | float | None) -> int:
     try:
         value = int(value or 0)
     except TypeError, ValueError:
@@ -423,10 +528,10 @@ def _safe_positive_int(value) -> int:
     return value if 0 < value <= _MAX_LOOKUP_VALUES else 0
 
 
-def _canonical_categorize_by(value):
+def _canonical_categorize_by(value: str | None) -> str | None:
     if not value:
         return value
-    return str(value).replace("Categorize", "Categorise")
+    return value.replace("Categorize", "Categorise")
 
 
 # ---------------------------------------------------------------------------
@@ -434,7 +539,7 @@ def _canonical_categorize_by(value):
 # ---------------------------------------------------------------------------
 
 
-def _should_attach_party_names(filters: dict) -> bool:
+def _should_attach_party_names(filters: dict[str, Any]) -> bool:
     """Attach party names only when requested columns or grouping need them."""
     if filters.get("_needs_party_name"):
         return True
@@ -443,7 +548,7 @@ def _should_attach_party_names(filters: dict) -> bool:
     )
 
 
-def _get_order_by_clause(filters: dict) -> str:
+def _get_order_by_clause(filters: dict[str, Any]) -> str:
     """Return the historical order clause for external callers/tests."""
     categorize_by = _canonical_categorize_by(filters.get("categorize_by", ""))
     if categorize_by == "Categorise by Voucher":
@@ -457,7 +562,7 @@ def _get_order_by_clause(filters: dict) -> str:
     return "order by gl.posting_date, gl.account, gl.creation"
 
 
-def get_conditions(filters: dict) -> str:
+def get_conditions(filters: dict[str, Any]) -> str:
     """Build the legacy condition string retained for compatibility callers."""
     conditions = []
     ignore_is_opening = filters.get("_ignore_is_opening", False)
@@ -472,7 +577,7 @@ def get_conditions(filters: dict) -> str:
     return "and {}".format(" and ".join(conditions)) if conditions else ""
 
 
-def _build_account_conditions(filters):
+def _build_account_conditions(filters: dict[str, Any]) -> list[str]:
     conditions = []
     if filters.get("account"):
         filters["account"] = get_accounts_with_children(filters["account"])
@@ -486,7 +591,7 @@ def _build_account_conditions(filters):
     return conditions
 
 
-def _build_voucher_conditions(filters):
+def _build_voucher_conditions(filters: dict[str, Any]) -> list[str]:
     conditions = []
     if filters.get("voucher_no"):
         conditions.append("gl.voucher_no=%(voucher_no)s")
@@ -534,7 +639,7 @@ def _build_voucher_conditions(filters):
     return conditions
 
 
-def _build_karam_conditions(filters):
+def _build_karam_conditions(filters: dict[str, Any]) -> list[str]:
     conditions = []
     if filters.get("letter"):
         conditions.append("gl.letter=%(letter)s")
@@ -546,7 +651,7 @@ def _build_karam_conditions(filters):
     return conditions
 
 
-def _build_party_conditions(filters):
+def _build_party_conditions(filters: dict[str, Any]) -> list[str]:
     conditions = []
     if _canonical_categorize_by(
         filters.get("categorize_by")
@@ -559,18 +664,22 @@ def _build_party_conditions(filters):
     return conditions
 
 
-def _build_date_conditions(filters, ignore_is_opening):
+def _build_date_conditions(
+    filters: dict[str, Any], ignore_is_opening: bool | int | None
+) -> list[str]:
     conditions = []
     opening_aware = not (
         filters.get("account")
         or filters.get("party")
         or _canonical_categorize_by(filters.get("categorize_by"))
-        in ["Categorise by Account", "Categorise by Party"]
+        in (
+            "Categorise by Account",
+            "Categorise by Party",
+            "Group by Account w/ Opening",
+        )
     )
     if filters.get("disable_opening_balance_calculation") or opening_aware:
-        if not ignore_is_opening and not filters.get(
-            "disable_opening_balance_calculation"
-        ):
+        if not ignore_is_opening:
             conditions.append(
                 "(gl.posting_date >=%(from_date)s or gl.is_opening = 'Yes')"
             )
@@ -583,7 +692,7 @@ def _build_date_conditions(filters, ignore_is_opening):
     return conditions
 
 
-def _build_finance_book_conditions(filters):
+def _build_finance_book_conditions(filters: dict[str, Any]) -> list[str]:
     conditions = []
     if filters.get("include_default_book_entries"):
         if filters.get("finance_book"):
@@ -612,7 +721,7 @@ def _build_finance_book_conditions(filters):
     return conditions
 
 
-def _build_dimension_conditions(filters):
+def _build_dimension_conditions(filters: dict[str, Any]) -> list[str]:
     conditions = []
     accounting_dimensions = filters.get(
         "_dimensions_meta"
@@ -632,8 +741,113 @@ def _build_dimension_conditions(filters):
     return conditions
 
 
-def _build_system_conditions(filters):
+def _build_system_conditions(filters: dict[str, Any]) -> list[str]:
     conditions = []
     if not filters.get("show_cancelled_entries"):
         conditions.append("gl.is_cancelled = 0")
     return conditions
+
+
+def _account_currency_expression(gl: Any) -> Any:
+    """Resolve legacy blank GL currency from its account master."""
+    account = frappe.qb.DocType("Account")
+    return Coalesce(NullIf(gl.account_currency, ""), account.account_currency)
+
+
+def _build_qb_flat_opening_conditions(filters: dict[str, Any], gl: Any) -> list[Any]:
+    """Use the same opening-entry rules as the report aggregation."""
+    boundary = gl.posting_date < filters.get("from_date")
+    if filters.get("disable_opening_balance_calculation"):
+        boundary &= gl.is_opening == "Yes"
+    elif not filters.get("show_opening_entries") and not filters.get(
+        "_ignore_is_opening"
+    ):
+        boundary |= gl.is_opening == "Yes"
+    return [boundary]
+
+
+def get_flat_account_currency_openings(
+    filters: dict[str, Any],
+) -> dict[tuple[str | None, str | None], float]:
+    """Fetch each account's opening balance with the report's permissions and filters."""
+    if filters.get("categorize_by") != "Flat Chronological" or (
+        filters.get("disable_opening_balance_calculation")
+        and filters.get("_ignore_is_opening")
+    ):
+        return {}
+    opening_filters = frappe._dict(filters.copy())
+    opening_filters["_flat_account_openings"] = True
+    if opening_filters.get("include_default_book_entries"):
+        opening_filters["company_fb"] = frappe.get_cached_value(
+            "Company", opening_filters.get("company") or "", "default_finance_book"
+        )
+    gl = frappe.qb.DocType("GL Entry")
+    account = frappe.qb.DocType("Account")
+    currency = _account_currency_expression(gl)
+    voucher_data = None
+    if opening_filters.get("karam_series") or opening_filters.get("translation"):
+        voucher_data = _get_voucher_data_for_filters(opening_filters)
+    criteria = _build_qb_conditions(opening_filters, gl, voucher_data)
+    if match_conditions := build_match_conditions("GL Entry"):
+        criteria.append(RawCriterion(f"({match_conditions})"))
+    rows = (
+        frappe.qb.from_(gl)
+        .left_join(account)
+        .on(gl.account == account.name)
+        .select(
+            gl.account,
+            currency.as_("account_currency"),
+            (
+                Sum(gl.debit_in_account_currency) - Sum(gl.credit_in_account_currency)
+            ).as_("opening_balance"),
+        )
+        .where(Criterion.all(criteria))
+        .groupby(gl.account, currency)
+        .run(as_dict=True)
+    )
+    return {
+        (row.account, row.account_currency): flt(row.opening_balance)
+        for row in rows
+        if row.account
+    }
+
+
+def _prepare_currency_values(
+    gl_entries: list[frappe._dict[str, Any]], party_name_map: dict[str, Any]
+) -> None:
+    """Preserve company amounts before conversion and flag unresolved account currency."""
+    for gl_entry in gl_entries:
+        if not cstr(gl_entry.get("account_currency")).strip() and (
+            flt(gl_entry.get("debit_in_account_currency"))
+            or flt(gl_entry.get("credit_in_account_currency"))
+            or gl_entry.get("_account_currency_contribution")
+        ):
+            gl_entry["_mixed_account_currency"] = 1
+        if party_name_map and gl_entry.party_type and gl_entry.party:
+            gl_entry.party_name = party_name_map.get(gl_entry.party_type, {}).get(
+                gl_entry.party
+            )
+        gl_entry.debit_in_company_currency = gl_entry.debit
+        gl_entry.credit_in_company_currency = gl_entry.credit
+
+
+def _voucher_pair_condition(
+    gl: Table, voucher_data: dict[tuple[str, str], dict[str, Any]] | None
+) -> Criterion:
+    """Match complete voucher pairs and fail closed when no voucher matches."""
+    pairs = list(voucher_data or {})
+    if len(pairs) > _MAX_VOUCHER_FILTER_PAIRS:
+        frappe.throw(
+            _(
+                "The Series or Translation filter matches too many vouchers. "
+                "Please use a more specific filter."
+            )
+        )
+    if not pairs:
+        return gl.name == ""
+    return Criterion.any(
+        [
+            (gl.voucher_type == doctype) & (gl.voucher_no == name)
+            for doctype, name in pairs
+        ]
+    )

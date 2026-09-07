@@ -1,4 +1,3 @@
-# ruff: noqa: D102
 """Tests for trial balance reporting helpers."""
 
 from __future__ import annotations
@@ -13,8 +12,8 @@ if TYPE_CHECKING:
     from types import ModuleType
 
 MODULE_NAME = (
-    "karam_finance.reporting_currency.report.trial_balance_reporting."
-    "trial_balance_reporting"
+    "karam_finance.reporting_currency.report.trial_balance_(reporting_currency)."
+    "trial_balance_(reporting_currency)"
 )
 
 
@@ -35,7 +34,7 @@ class TestTrialBalanceReporting(FrappeTestCase):
             "closing_credit": 10.0,
         }
 
-        module._prepare_opening_closing(row)
+        module._prepare_opening_closing(row, include_account_currency=False)
 
         assert row["opening_debit"] == 20.0
         assert row["opening_credit"] == 0.0

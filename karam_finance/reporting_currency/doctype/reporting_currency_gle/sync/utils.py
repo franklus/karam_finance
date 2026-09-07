@@ -172,7 +172,7 @@ def _generate_csv_download(
     frappe.local.response.type = "download"
 
 
-@frappe.whitelist()  # nosemgrep — RC module, UI-controlled access
+@frappe.whitelist()
 def export_temporal_validation_entries_csv(
     cache_key: str, default_currency: str, reporting_currency: str
 ) -> None:
@@ -180,6 +180,7 @@ def export_temporal_validation_entries_csv(
 
     Retrieves data from cache and generates downloadable CSV.
     """
+    frappe.only_for("System Manager")
     # Retrieve entries from cache
     entries = frappe.cache().get_value(cache_key)
 
@@ -206,7 +207,7 @@ def export_temporal_validation_entries_csv(
     )
 
 
-@frappe.whitelist()  # nosemgrep — RC module, UI-controlled access
+@frappe.whitelist()
 def export_missing_currency_gl_entries_csv(
     account_currency: str, reporting_currency: str
 ) -> None:
@@ -214,6 +215,7 @@ def export_missing_currency_gl_entries_csv(
 
     Returns a CSV file download.
     """
+    frappe.only_for("System Manager")
     # Build filters
     filters = {
         "docstatus": 1,

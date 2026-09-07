@@ -20,9 +20,9 @@ def apply_gl_filters(
     gl_entry: Any,
     filters: Any,
     *,
-    finance_books=None,
-    accounting_dimensions=None,
-):
+    finance_books: Any = None,
+    accounting_dimensions: Any = None,
+) -> Any:
     """Apply v16 Trial Balance filters to a GL Entry query."""
 
     if filters.get("cost_center"):
@@ -41,15 +41,17 @@ def apply_gl_filters(
     if finance_books is None:
         finance_books = bool(frappe.db.count("Finance Book"))
 
-    query = _apply_finance_book_filter(query, gl_entry, filters, finance_books)
-    query = _apply_dimension_filters(query, gl_entry, filters, accounting_dimensions)
-
-    return query
+    query = _apply_finance_book_filter(
+        query, gl_entry, filters, finance_books=finance_books
+    )
+    return _apply_dimension_filters(
+        query, gl_entry, filters, accounting_dimensions=accounting_dimensions
+    )
 
 
 def _apply_finance_book_filter(
-    query: Any, gl_entry: Any, filters: Any, finance_books: Any
-):
+    query: Any, gl_entry: Any, filters: Any, *, finance_books: Any
+) -> Any:
     if not finance_books:
         return query
 
@@ -80,8 +82,8 @@ def _apply_finance_book_filter(
 
 
 def _apply_dimension_filters(
-    query: Any, gl_entry: Any, filters: Any, accounting_dimensions: Any
-):
+    query: Any, gl_entry: Any, filters: Any, *, accounting_dimensions: Any
+) -> Any:
     for dimension in accounting_dimensions:
         value = filters.get(dimension.fieldname)
         if not value:

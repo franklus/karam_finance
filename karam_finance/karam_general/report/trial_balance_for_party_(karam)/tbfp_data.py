@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import Any
+
 import frappe
 from erpnext.accounts.report.general_ledger.general_ledger import (
     get_accounts_with_children,
@@ -27,11 +29,11 @@ COMPANY_VALUE_FIELDS = (
 )
 
 
-def get_data(filters, show_party_name):
+def get_data(filters: Any, show_party_name: Any) -> Any:
     """Build party/account-currency rows from one grouped GL query."""
     party_name_field = get_party_name_field(filters)
 
-    account_filter = []
+    account_filter: list[str] | None = []
     if filters.get("account"):
         account_filter = get_accounts_with_children(filters.get("account"))
 
@@ -52,7 +54,7 @@ def get_data(filters, show_party_name):
         )
     else:
         party_currency_balances = get_party_currency_balances(filters, account_filter)
-        party_names = {}
+        party_names: dict[str, Any] = {}
 
     party_keys = sorted(
         str(party) for party in (party_names or party_currency_balances)
@@ -70,18 +72,18 @@ def get_data(filters, show_party_name):
     ) = _build_party_rows(
         parties,
         party_currency_balances,
-        party_name_field,
-        show_party_name,
-        company_currency,
-        filters,
+        {
+            "party_name_field": party_name_field,
+            "show_party_name": show_party_name,
+            "company_currency": company_currency,
+        },
+        filters=filters,
     )
 
     total_account_currency = next(iter(account_currencies_seen), company_currency)
     if len(account_currencies_seen) > 1:
         total_account_currency = ""
-        total_account_currency_values = {
-            field: None for field in ACCOUNT_CCY_VALUE_FIELDS
-        }
+        total_account_currency_values = dict.fromkeys(ACCOUNT_CCY_VALUE_FIELDS)
 
     data.extend(
         [
@@ -90,7 +92,7 @@ def get_data(filters, show_party_name):
                 company_currency,
                 total_company_values,
                 total_account_currency_values,
-                total_account_currency,
+                account_currency=total_account_currency,
             ),
         ]
     )
@@ -98,13 +100,15 @@ def get_data(filters, show_party_name):
 
 
 def _build_party_rows(
-    parties,
-    party_currency_balances,
-    party_name_field,
-    show_party_name,
-    company_currency,
-    filters,
-):
+    parties: Any,
+    party_currency_balances: Any,
+    display: dict[str, Any],
+    *,
+    filters: Any,
+) -> Any:
+    party_name_field = display["party_name_field"]
+    show_party_name = display["show_party_name"]
+    company_currency = display["company_currency"]
     data = []
     total_company_values = _zero_values(COMPANY_VALUE_FIELDS)
     total_account_currency_values = _zero_values(ACCOUNT_CCY_VALUE_FIELDS)
@@ -122,10 +126,9 @@ def _build_party_rows(
                 party_name,
                 party.get(party_name_field),
                 show_party_name,
-                company_currency,
+                company_currency=company_currency,
             )
             data.append(row)
-            account_currencies_seen.add(company_currency)
             continue
 
         company_values = _company_values(currency_balances.values())
@@ -137,6 +140,7 @@ def _build_party_rows(
             "party": party_name,
             "party_name": party.get(party_name_field),
             "show_party_name": show_party_name,
+            "company_currency": company_currency,
         }
 
         for index, account_currency in enumerate(account_currencies):
@@ -144,13 +148,12 @@ def _build_party_rows(
             row = build_party_row_from_sources(
                 party_meta,
                 account_currency,
-                company_currency,
                 company_values if index == 0 else {},
-                account_values,
+                account_currency_values=account_values,
                 show_party_label=index == 0,
             )
             data.append(row)
-            account_currencies_seen.add(account_currency)
+            account_currencies_seen.update(_contributing_account_currency(row))
 
             if index == 0:
                 _add_values(total_company_values, row, VALUE_FIELDS)
@@ -164,7 +167,7 @@ def _build_party_rows(
     )
 
 
-def _company_values(currency_balances):
+def _company_values(currency_balances: Any) -> Any:
     """Aggregate raw company-currency sides and calculate closing values."""
     values = _zero_values(("opening_debit", "opening_credit", "debit", "credit"))
     for account_values in currency_balances:
@@ -184,7 +187,7 @@ def _company_values(currency_balances):
     return values
 
 
-def _include_party(company_values, filters):
+def _include_party(company_values: Any, filters: Any) -> Any:
     has_value = any(flt(company_values.get(field)) for field in VALUE_FIELDS)
     if not cint(filters.get("show_zero_values")) and not has_value:
         return False
@@ -197,11 +200,13 @@ def _include_party(company_values, filters):
     )
 
 
-def _zero_values(fields):
-    return {field: 0.0 for field in fields}
+def _zero_values(fields: Any) -> Any:
+    return dict.fromkeys(fields, 0.0)
 
 
-def _build_zero_party_row(party, party_name, show_party_name, company_currency):
+def _build_zero_party_row(
+    party: Any, party_name: Any, show_party_name: Any, *, company_currency: Any
+) -> Any:
     row = {
         "party": party,
         "account_currency": company_currency,
@@ -213,12 +218,19 @@ def _build_zero_party_row(party, party_name, show_party_name, company_currency):
     return row
 
 
-def _add_values(target, source, fields):
+def _add_values(target: Any, source: Any, fields: Any) -> Any:
     for field in fields:
         target[field] = flt(target.get(field)) + flt(source.get(field))
 
 
-def _net_sides(debit, credit):
+def _net_sides(debit: Any, credit: Any) -> Any:
     if flt(debit) > flt(credit):
         return flt(debit) - flt(credit), 0.0
     return 0.0, flt(credit) - flt(debit)
+
+
+def _contributing_account_currency(row: dict[str, Any]) -> set[str]:
+    """Ignore zero-only currencies when labelling the total."""
+    if any(flt(row.get(field)) != 0 for field in ACCOUNT_CCY_VALUE_FIELDS):
+        return {row["account_currency"]}
+    return set()

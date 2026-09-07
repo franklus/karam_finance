@@ -4,10 +4,12 @@ from typing import Any, cast
 import frappe
 from erpnext.accounts.utils import get_fiscal_year
 from frappe import _
-from frappe.utils import formatdate, getdate
+from frappe.utils import cint, formatdate, getdate
 
 
 def validate_filters(filters: Any) -> None:
+    # Frappe omits unchecked checkboxes from report requests.
+    filters.show_group_accounts = cint(filters.get("show_group_accounts"))
     if filters.get("ignore_fiscal_year"):
         validate_date_range_filters(filters)
         return
@@ -43,6 +45,10 @@ def validate_filters(filters: Any) -> None:
     if filters.from_date > filters.to_date:
         frappe.throw(_("From Date cannot be greater than To Date"))
 
+    _bound_dates_to_fiscal_year(filters)
+
+
+def _bound_dates_to_fiscal_year(filters: Any) -> None:
     if (
         filters.from_date < filters.year_start_date
         or filters.from_date > filters.year_end_date

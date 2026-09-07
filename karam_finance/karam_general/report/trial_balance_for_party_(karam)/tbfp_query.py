@@ -9,7 +9,7 @@ party/currency index consumed by the report.
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, cast
+from typing import TYPE_CHECKING, Any, cast
 
 import frappe
 from frappe.query_builder import Case
@@ -17,11 +17,13 @@ from frappe.query_builder.functions import Max, Min, Sum
 from frappe.utils import flt
 from pypika.terms import Field
 
+_MISSING_PARTY_MASTER = "Party master is required for all-party queries"
+
 if TYPE_CHECKING:
     from collections.abc import Mapping
 
 
-def get_party_currency_balances(filters, account_filter=None):
+def get_party_currency_balances(filters: Any, account_filter: Any = None) -> Any:
     """Return conditional GL aggregates keyed by party and account currency.
 
     The predicates intentionally mirror ERPNext v16's Party Trial Balance
@@ -37,8 +39,8 @@ def get_party_currency_balances(filters, account_filter=None):
 
 
 def get_party_currency_balances_with_names(
-    filters, account_filter=None, party_name_field="name"
-):
+    filters: Any, account_filter: Any = None, party_name_field: Any = "name"
+) -> Any:
     """Return balances and master names for parties with qualifying GL rows.
 
     The normal v16 report always performs a separate party-master query. For
@@ -55,8 +57,8 @@ def get_party_currency_balances_with_names(
 
 
 def get_party_currency_balances_with_all_names(
-    filters, account_filter=None, party_name_field="name"
-):
+    filters: Any, account_filter: Any = None, party_name_field: Any = "name"
+) -> Any:
     """Return balances and every party name, including parties with no GL rows."""
     rows = _run_party_currency_query(
         filters,
@@ -68,8 +70,8 @@ def get_party_currency_balances_with_all_names(
 
 
 def _run_party_currency_query_with_currency_fallback(
-    filters, account_filter=None, party_name_field=None
-):
+    filters: Any, account_filter: Any = None, party_name_field: Any = None
+) -> Any:
     """Use party grouping when each party has one account currency.
 
     Most party ledgers have one account currency per party. Grouping by party
@@ -95,13 +97,13 @@ def _run_party_currency_query_with_currency_fallback(
 
 
 def _run_party_currency_query(
-    filters,
-    account_filter=None,
-    party_name_field=None,
+    filters: Any,
+    account_filter: Any = None,
+    party_name_field: Any = None,
     *,
-    include_all_parties=False,
-    group_by_account_currency=True,
-):
+    include_all_parties: Any = False,
+    group_by_account_currency: Any = True,
+) -> Any:
     gl_entry = frappe.qb.DocType("GL Entry")
     party_entry = (
         frappe.qb.DocType(filters.party_type)
@@ -111,10 +113,9 @@ def _run_party_currency_query(
     opening_condition = (gl_entry.posting_date < filters.from_date) | (
         gl_entry.is_opening == "Yes"
     )
-    movement_condition = (
-        (gl_entry.posting_date >= filters.from_date)
-        & (gl_entry.posting_date <= filters.to_date)
-        & (gl_entry.is_opening == "No")
+    # The query scope already excludes every entry after to_date.
+    movement_condition = (gl_entry.posting_date >= filters.from_date) & (
+        gl_entry.is_opening == "No"
     )
 
     # ``GL Entry.is_opening`` is the standard ``No``/``Yes`` Select. With
@@ -132,7 +133,7 @@ def _run_party_currency_query(
     )
 
     select_fields, group_fields = _party_fields(
-        gl_entry, party_entry, party_name_field, include_all_parties
+        gl_entry, party_entry, party_name_field, include_all_parties=include_all_parties
     )
     select_fields.extend(
         _balance_fields(
@@ -142,13 +143,14 @@ def _run_party_currency_query(
             group_by_account_currency=group_by_account_currency,
         )
     )
+    if account_filter:
+        gl_scope &= gl_entry.account.isin(account_filter)
     query = _party_query(
         gl_entry,
         party_entry,
         gl_scope,
-        filters,
-        account_filter,
-        include_all_parties,
+        filters=filters,
+        include_all_parties=include_all_parties,
     )
     query = query.select(*select_fields)
     if group_by_account_currency:
@@ -158,10 +160,12 @@ def _run_party_currency_query(
     return query.run(as_dict=True)
 
 
-def _party_fields(gl_entry, party_entry, party_name_field, include_all_parties):
+def _party_fields(
+    gl_entry: Any, party_entry: Any, party_name_field: Any, *, include_all_parties: Any
+) -> Any:
     if include_all_parties:
         if party_entry is None:
-            raise RuntimeError("Party master is required for all-party queries")
+            raise RuntimeError(_MISSING_PARTY_MASTER)
         select_fields = [party_entry.name.as_("party")]
         group_fields = [party_entry.name]
     else:
@@ -177,12 +181,12 @@ def _party_fields(gl_entry, party_entry, party_name_field, include_all_parties):
 
 
 def _balance_fields(
-    gl_entry,
-    opening_condition,
-    movement_condition,
+    gl_entry: Any,
+    opening_condition: Any,
+    movement_condition: Any,
     *,
-    group_by_account_currency,
-):
+    group_by_account_currency: Any,
+) -> Any:
     account_currency_fields = (
         (gl_entry.account_currency,)
         if group_by_account_currency
@@ -219,20 +223,18 @@ def _balance_fields(
 
 
 def _party_query(
-    gl_entry,
-    party_entry,
-    gl_scope,
-    filters,
-    account_filter,
-    include_all_parties,
-):
+    gl_entry: Any,
+    party_entry: Any,
+    gl_scope: Any,
+    *,
+    filters: Any,
+    include_all_parties: Any,
+) -> Any:
     if include_all_parties:
         if party_entry is None:
-            raise RuntimeError("Party master is required for all-party queries")
+            raise RuntimeError(_MISSING_PARTY_MASTER)
         query = frappe.qb.from_(party_entry).left_join(gl_entry)
         join_condition = (party_entry.name == gl_entry.party) & gl_scope
-        if account_filter:
-            join_condition &= gl_entry.account.isin(account_filter)
         query = query.on(join_condition)
         if filters.get("party"):
             query = query.where(party_entry.name == filters.party)
@@ -248,19 +250,17 @@ def _party_query(
     where_condition = gl_scope
     if filters.get("party"):
         where_condition &= gl_entry.party == filters.party
-    if account_filter:
-        where_condition &= gl_entry.account.isin(account_filter)
     return query.where(where_condition)
 
 
-def _conditional_sum(condition, field, alias):
+def _conditional_sum(condition: Any, field: Any, alias: Any) -> Any:
     conditional_term = Case().when(condition, field).else_(0)
     return Sum(cast("Field", conditional_term)).as_(alias)
 
 
-def _index_rows(rows: list[Mapping[str, object]]):
+def _index_rows(rows: list[Mapping[str, object]]) -> Any:
     """Hydrate database rows into ``party -> currency -> values``."""
-    balances = {}
+    balances: dict[Any, dict[Any, Any]] = {}
 
     for row in rows:
         party = row.get("party")
@@ -304,7 +304,7 @@ def _has_mixed_account_currencies(rows: list[Mapping[str, object]]) -> bool:
     )
 
 
-def _party_names(rows):
+def _party_names(rows: Any) -> Any:
     return {row.get("party"): row.get("party_name") for row in rows if row.get("party")}
 
 
@@ -312,7 +312,7 @@ def _numeric(value: object) -> float | int | str | None:
     return cast("float | int | str | None", value)
 
 
-def _net_sides(value):
+def _net_sides(value: Any) -> Any:
     value = flt(value)
     if value > 0:
         return value, 0.0

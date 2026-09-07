@@ -9,10 +9,7 @@ import frappe
 from erpnext.accounts.doctype.accounting_dimension.accounting_dimension import (
     get_accounting_dimensions,
 )
-from erpnext.accounts.report.financial_statements import (
-    filter_accounts,
-    filter_out_zero_value_rows,
-)
+from erpnext.accounts.report.financial_statements import filter_accounts
 from erpnext.accounts.report.utils import convert_to_presentation_currency, get_currency
 from frappe.query_builder.functions import Sum
 from frappe.utils import add_days, flt, getdate
@@ -24,7 +21,7 @@ from .tbk_aggregation import (
 )
 from .tbk_conditions import apply_gl_filters
 from .tbk_query import get_period_balances
-from .tbk_rows import prepare_data
+from .tbk_rows import filter_out_zero_value_rows, prepare_data
 
 ACCOUNT_FIELDS = (
     "name",
@@ -41,7 +38,7 @@ ACCOUNT_FIELDS = (
 )
 
 
-def get_data(filters: Any):
+def get_data(filters: Any) -> Any:
     accounts = _get_accounts(filters.company)
     if not accounts:
         return None
@@ -74,13 +71,15 @@ def get_data(filters: Any):
     # have been accumulated.
     finalize_account_currency_values(accounts)
 
-    data = prepare_data(accounts, filters, parent_children_map, company_currency)
+    data = prepare_data(
+        accounts, filters, parent_children_map, company_currency=company_currency
+    )
     return filter_out_zero_value_rows(
         data, parent_children_map, show_zero_values=filters.get("show_zero_values")
     )
 
 
-def _get_accounts(company):
+def _get_accounts(company: Any) -> Any:
     account = frappe.qb.DocType("Account")
     query = (
         frappe.qb.from_(account)
@@ -95,10 +94,10 @@ def _get_opening_balances(
     filters: Any,
     ignore_is_opening: Any,
     *,
-    finance_books=None,
-    accounting_dimensions=None,
-):
-    opening_entries = []
+    finance_books: Any = None,
+    accounting_dimensions: Any = None,
+) -> Any:
+    opening_entries: list[Any] = []
     ignore_closing_balances = frappe.db.get_single_value(
         "Accounts Settings", "ignore_account_closing_balance"
     )
@@ -147,6 +146,10 @@ def _get_opening_balances(
             accounting_dimensions=accounting_dimensions,
         )
 
+    return _aggregate_opening_entries(opening_entries, filters)
+
+
+def _aggregate_opening_entries(opening_entries: Any, filters: Any) -> Any:
     if filters.get("presentation_currency"):
         entries_by_report_type = {}
         for entry in opening_entries:
@@ -167,7 +170,10 @@ def _get_opening_balances(
                 "opening_credit_in_account_currency": 0.0,
             },
         )
-        if entry.get("account_currency"):
+        if entry.get("account_currency") and (
+            flt(entry.debit_in_account_currency) != 0
+            or flt(entry.credit_in_account_currency) != 0
+        ):
             account_data["account_currencies"].add(entry.account_currency)
         account_data["opening_debit"] += flt(entry.debit)
         account_data["opening_credit"] += flt(entry.credit)
@@ -183,11 +189,11 @@ def _get_opening_balances(
 
 def _get_account_closing_currency_rows(
     filters: Any,
-    period_closing_voucher,
+    period_closing_voucher: Any,
     *,
-    finance_books=None,
-    accounting_dimensions=None,
-):
+    finance_books: Any = None,
+    accounting_dimensions: Any = None,
+) -> Any:
     closing_balance = frappe.qb.DocType("Account Closing Balance")
     account = frappe.qb.DocType("Account")
     query = (
@@ -230,11 +236,11 @@ def _get_account_closing_currency_rows(
 def _get_gl_opening_currency_rows(
     filters: Any,
     ignore_is_opening: Any,
-    start_date=None,
+    start_date: Any = None,
     *,
-    finance_books=None,
-    accounting_dimensions=None,
-):
+    finance_books: Any = None,
+    accounting_dimensions: Any = None,
+) -> Any:
     gl_entry = frappe.qb.DocType("GL Entry")
     account = frappe.qb.DocType("Account")
     query = (

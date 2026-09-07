@@ -16,13 +16,21 @@ requires = ["flit_core >=3.4,<4"]
 build-backend = "flit_core.buildapi"
 
 [tool.bench.dev-dependencies]
+complexipy = "==8.0.0"
+coverage = "==7.15.4"
+pylint = "==4.0.8"
 pyrefly = "==1.2.0"
-ruff = ">=0.16.2,<0.17"
+ruff = "==0.16.2"
+vulture = "==2.16"
 
 [dependency-groups]
 dev = [
+    "complexipy==8.0.0",
+    "coverage==7.15.4",
+    "pylint==4.0.8",
     "pyrefly==1.2.0",
-    "ruff>=0.16.2,<0.17",
+    "ruff==0.16.2",
+    "vulture==2.16",
 ]
 
 # These apt dependencies will be installed from Ubuntu repositories when you host your app on Frappe Cloud
@@ -32,7 +40,7 @@ packages = []
 [tool.ruff]
 line-length = 88
 target-version = "py314"
-required-version = ">=0.16.2,<0.17"
+required-version = "==0.16.2"
 src = ["karam_finance"]
 show-fixes = true
 extend-exclude = [
@@ -42,6 +50,9 @@ extend-exclude = [
 ]
 
 [tool.ruff.lint]
+# Opt into only named preview rules; keep formatter behaviour stable.
+preview = true
+explicit-preview-rules = true
 select = [
     "A",
     "ARG",
@@ -83,33 +94,24 @@ select = [
     "PLR0913",
     "PLR0915",
     "PLR0917",
+    "PLR1702",
 ]
 ignore = [
-    # Deferred existing debt; adopt each rule after its current findings are fixed.
-    "ARG001",
-    "BLE001",
-    "C420",
-    "DTZ011",
+    # Formatting owns wrapping; long URLs and SQL literals are not lint debt.
     "E501",
-    "FURB162",
-    "PLC0415",
-    "PT022",
-    "RET504",
-    "RUF100",
-    "SIM102",
-    "TRY003",
 ]
 typing-modules = ["frappe.types.DF"]
 
 [tool.ruff.lint.mccabe]
-max-complexity = 19
+max-complexity = 7
 
 [tool.ruff.lint.pylint]
-max-args = 10
-max-branches = 18
-max-positional-args = 11
+max-args = 5
+max-branches = 7
+max-positional-args = 3
+max-nested-blocks = 3
 max-returns = 6
-max-statements = 70
+max-statements = 35
 
 [tool.ruff.lint.flake8-builtins]
 strict-checking = true
@@ -121,5 +123,49 @@ docstring-code-format = true
 skip-magic-trailing-comma = false
 
 [tool.ruff.lint.per-file-ignores]
-"**/tests/**/*.py" = ["S101", "S105", "PLR0915"]
-"**/test_*.py" = ["S101", "S105", "PLR0915"]
+# Assertions and dummy credentials are intentional in tests. Structural checks
+# remain active; any further exception must be local and justified.
+"**/tests/**/*.py" = ["S101", "S105"]
+"**/test_*.py" = ["S101", "S105"]
+
+[tool.complexipy]
+paths = ["karam_finance", "tools"]
+max-complexity-allowed = 10
+snapshot-ignore = true
+ignore-complexity = false
+no-ignore = true
+
+# Pylint supplies only the physical module-size check; Ruff owns linting.
+[tool.pylint.main]
+recursive = true
+persistent = false
+
+[tool.pylint.messages_control]
+disable = ["all"]
+enable = ["too-many-lines"]
+
+[tool.pylint.format]
+max-module-lines = 500
+
+[tool.pylint.reports]
+score = false
+
+[tool.vulture]
+paths = ["karam_finance", "tools"]
+# Include lower-confidence candidates for review. Frappe's dynamic registration
+# can produce false positives; verify each before adding a specific whitelist.
+min_confidence = 60
+sort_by_size = true
+
+[tool.coverage.run]
+branch = true
+source = ["karam_finance"]
+
+[tool.coverage.report]
+fail_under = 98
+precision = 2
+show_missing = true
+skip_empty = true
+omit = ["*/tests/*", "*/test_*.py"]
+# Do not exclude defensive branches or exceptions from delivery coverage.
+exclude_lines = ["if TYPE_CHECKING:"]

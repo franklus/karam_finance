@@ -101,7 +101,38 @@ jobs:
         run: bash tools/run_pyrefly.sh
 
       - name: Run server tests
-        working-directory: /home/runner/frappe-bench
+        working-directory: /home/runner/frappe-bench/sites
         env:
           TYPE: server
-        run: bench --site test_site run-tests --app karam_finance
+          COVERAGE_RCFILE: /home/runner/frappe-bench/apps/karam_finance/pyproject.toml
+        # Measure directly: Frappe's --coverage wrapper excludes patches.
+        run: >-
+          ../env/bin/python -m coverage run
+          -m frappe.utils.bench_helper frappe
+          --site test_site run-tests --app karam_finance
+
+      - name: Enforce separate line and branch coverage thresholds
+        working-directory: /home/runner/frappe-bench/sites
+        env:
+          COVERAGE_RCFILE: /home/runner/frappe-bench/apps/karam_finance/pyproject.toml
+        run: |
+          ../env/bin/python -m coverage json -o coverage.json --fail-under=0
+          ../env/bin/python - <<'PY'
+          import json
+          from pathlib import Path
+
+          report = json.loads(Path("coverage.json").read_text())
+          totals = report["totals"]
+          if not report["meta"]["branch_coverage"]:
+              raise SystemExit("Branch coverage was not measured")
+          for label, covered, total in (
+              ("Line", totals["covered_lines"], totals["num_statements"]),
+              ("Branch", totals["covered_branches"], totals["num_branches"]),
+          ):
+              if total <= 0:
+                  raise SystemExit(f"No {label.lower()} coverage data")
+              percentage = covered / total * 100
+              print(f"{label} coverage: {percentage:.2f}% (required: 98%)")
+              if covered * 100 < total * 98:
+                  raise SystemExit(f"{label} coverage is below 98%")
+          PY

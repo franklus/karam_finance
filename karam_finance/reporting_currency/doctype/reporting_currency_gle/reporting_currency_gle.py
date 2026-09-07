@@ -46,6 +46,25 @@ class ReportingCurrencyGLE(Document):
 
     def validate(self) -> None:
         """Prevent editing of DOE records."""
+        if self.manual_entry or (
+            self.is_new() and not self.gl_entry and not self.reporting_doe
+        ):
+            currency = frappe.db.get_single_value(
+                "Reporting Currency Settings", "reporting_currency"
+            )
+            if not currency:
+                frappe.throw(
+                    frappe._(
+                        "Configure Reporting Currency before creating a manual entry."
+                    )
+                )
+            if self.reporting_currency and self.reporting_currency != currency:
+                frappe.throw(
+                    frappe._(
+                        "Manual reporting entries must use {0}. Verify the currency and amount before correcting an existing entry."
+                    ).format(currency)
+                )
+            self.reporting_currency = currency
         if self.reporting_doe == 1 and not self.is_new():
             frappe.throw(
                 frappe._(
@@ -89,7 +108,7 @@ def _generate_manual_entry_name(posting_date: str | None) -> str:
         if len(parts) >= MANUAL_NAME_MIN_PARTS:
             try:
                 next_number = int(parts[3]) + 1
-            except (ValueError, IndexError):
+            except ValueError, IndexError:
                 next_number = 1
         else:
             next_number = 1

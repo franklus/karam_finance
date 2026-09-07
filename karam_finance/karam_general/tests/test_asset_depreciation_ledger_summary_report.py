@@ -3,19 +3,21 @@
 from __future__ import annotations
 
 import importlib
-from typing import TYPE_CHECKING
+import sqlite3
+from typing import TYPE_CHECKING, Any
 from unittest import TestCase
 from unittest.mock import MagicMock, patch
 
 from frappe import _dict
 from pypika import Table
+from pypika.queries import QueryBuilder
 
 if TYPE_CHECKING:
     from types import ModuleType
 
 MODULE_NAME = (
-    "karam_finance.karam_general.report.asset_depreciation_ledger_summary."
-    "asset_depreciation_ledger_summary"
+    "karam_finance.karam_general.report.asset_depreciation_ledger_summary_(karam)."
+    "asset_depreciation_ledger_summary_(karam)"
 )
 
 
@@ -61,7 +63,7 @@ class TestAssetDepreciationLedgerSummaryReport(TestCase):
         }
 
         with (
-            patch.object(module, "_", side_effect=lambda value: value),
+            patch.object(module, "_", side_effect=str),
             patch.object(module, "_resolve_finance_book", return_value=None),
             patch.object(module, "_get_assets_details", return_value=assets),
             patch.object(module, "_get_schedule_details", return_value={}),
@@ -128,8 +130,8 @@ class TestAssetDepreciationLedgerSummaryReport(TestCase):
             filters,
             assets,
             schedules,
-            gl_totals,
-            {"AST-DISPOSAL": (1, 2)},
+            gl_totals=gl_totals,
+            booked_counts={"AST-DISPOSAL": (1, 2)},
         )
 
         assert len(rows) == 1
@@ -159,15 +161,14 @@ class TestAssetDepreciationLedgerSummaryReport(TestCase):
             "AST-002": _dict(name="ADS-002"),
         }
         query_rows = [
-            _dict(schedule="ADS-001", schedule_date="2024-01-31"),
-            _dict(schedule="ADS-001", schedule_date="2024-02-15"),
-            _dict(schedule="ADS-002", schedule_date="2024-01-15"),
-            _dict(schedule="ADS-002", schedule_date="2024-03-20"),
-            _dict(schedule="UNRELATED", schedule_date="2024-01-01"),
+            _dict(schedule="ADS-001", opening_count=1, booked_count=2),
+            _dict(schedule="ADS-002", opening_count=1, booked_count=2),
+            _dict(schedule="UNRELATED", opening_count=5, booked_count=5),
         ]
         query = MagicMock()
         query.select.return_value = query
         query.where.return_value = query
+        query.groupby.return_value = query
         query.run.return_value = query_rows
 
         qb = MagicMock()
@@ -230,7 +231,53 @@ class TestAssetDepreciationLedgerSummaryReport(TestCase):
             )
         }
 
-        rows = module._build_summary_rows(filters, assets, {}, {}, {"AST-NEG": (0, 0)})
+        rows = module._build_summary_rows(
+            filters, assets, {}, gl_totals={}, booked_counts={"AST-NEG": (0, 0)}
+        )
 
         assert len(rows) == 1
         assert rows[0].pending_depreciations == 0
+
+    def test_sql_counts_respect_boundaries_and_booked_status(self) -> None:
+        module = _load_module()
+        with sqlite3.connect(":memory:") as db:
+            db.execute(
+                'CREATE TABLE "tabDepreciation Schedule" '
+                "(parent TEXT, parenttype TEXT, docstatus INTEGER, "
+                "schedule_date TEXT, journal_entry TEXT)"
+            )
+            entries = [
+                ("ADS-1", "Asset Depreciation Schedule", 1, "2024-01-31", "JE-1"),
+                ("ADS-1", "Asset Depreciation Schedule", 1, "2024-02-01", "JE-2"),
+                ("ADS-1", "Asset Depreciation Schedule", 1, "2024-03-31", "JE-2"),
+                ("ADS-1", "Asset Depreciation Schedule", 1, "2024-04-01", "JE-4"),
+                ("ADS-1", "Asset Depreciation Schedule", 1, "2024-01-15", ""),
+                ("ADS-1", "Asset Depreciation Schedule", 1, "2024-01-15", None),
+                ("ADS-1", "Asset Depreciation Schedule", 2, "2024-01-15", "JE-X"),
+                ("ADS-1", "Asset", 1, "2024-01-15", "JE-X"),
+                ("UNSELECTED", "Asset Depreciation Schedule", 1, "2024-01-01", "JE-X"),
+            ]
+            db.executemany(
+                'INSERT INTO "tabDepreciation Schedule" VALUES (?,?,?,?,?)', entries
+            )
+            fetched = []
+
+            def run_query(query: Any, **_kwargs: Any) -> list[_dict[str, Any]]:
+                cursor = db.execute(query.get_sql())
+                result = [
+                    _dict(zip([c[0] for c in cursor.description], row, strict=True))
+                    for row in cursor.fetchall()
+                ]
+                fetched.extend(result)
+                return result
+
+            with patch.object(QueryBuilder, "run", run_query):
+                counts = module._get_booked_depreciation_counts(
+                    _dict(from_date="2024-02-01", to_date="2024-03-31"),
+                    {
+                        "Asset 1": _dict(name="ADS-1"),
+                        "Asset 2": _dict(name="ADS-EMPTY"),
+                    },
+                )
+            assert counts == {"Asset 1": (1, 3), "Asset 2": (0, 0)}
+            assert len(fetched) == 1

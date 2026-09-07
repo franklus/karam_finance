@@ -219,8 +219,8 @@ class TestGeneralLedgerReport(FrappeTestCase):
                 filters,
                 [],
                 gl_entries,
-                {},
-                totals,
+                gle_map={},
+                totals=totals,
             )
 
         assert len(entries) == 1
@@ -503,7 +503,7 @@ class TestGeneralLedgerReport(FrappeTestCase):
 
         with patch.object(module.frappe.db, "get_single_value", return_value=0):
             updated_totals, grouped_entries = module._get_account_wise_gle(
-                filters, [], entries, gle_map, totals
+                filters, [], entries, gle_map=gle_map, totals=totals
             )
 
         assert grouped_entries == []
@@ -538,8 +538,12 @@ class TestGeneralLedgerReport(FrappeTestCase):
             dimension_a=" A ",
         )
 
-        k1 = module._consolidated_key(base, True, True, ["dimension_a"])
-        k2 = module._consolidated_key(variant, True, True, ["dimension_a"])
+        k1 = module._consolidated_key(
+            base, True, True, accounting_dimensions=["dimension_a"]
+        )
+        k2 = module._consolidated_key(
+            variant, True, True, accounting_dimensions=["dimension_a"]
+        )
         assert k1 == k2
 
     def test_opening_closing_matrix_for_show_opening_entries_and_group_modes(
@@ -639,8 +643,8 @@ class TestGeneralLedgerReport(FrappeTestCase):
                     filters,
                     [],
                     gl_entries,
-                    gle_map,
-                    totals_template,
+                    gle_map=gle_map,
+                    totals=totals_template,
                 )
                 assert totals.opening.debit == opening
                 assert totals.total.debit == total
@@ -781,6 +785,41 @@ class TestGeneralLedgerReport(FrappeTestCase):
             "(gl.posting_date <=%(to_date)s or gl.is_opening = 'Yes')" in grouped_party
         )
 
+    def test_account_with_opening_keeps_the_same_history_as_account_grouping(
+        self,
+    ) -> None:
+        """Unfiltered account openings must include ordinary historical postings."""
+        query_module = _load_module()._gl_query
+        gl = frappe.qb.DocType("GL Entry")
+        for ignore_opening in (False, True):
+            for disable_opening in (False, True):
+                filters = _dict(
+                    from_date=date(2024, 1, 1),
+                    to_date=date(2024, 12, 31),
+                    _ignore_is_opening=ignore_opening,
+                    disable_opening_balance_calculation=disable_opening,
+                )
+                queries = []
+                legacy = []
+                for mode in ("Categorise by Account", "Group by Account w/ Opening"):
+                    filters.categorize_by = mode
+                    conditions = query_module._build_qb_date_conditions(filters, gl)
+                    queries.append(
+                        frappe.qb.from_(gl)
+                        .select(gl.name)
+                        .where(Criterion.all(conditions))
+                        .walk()
+                    )
+                    legacy.append(
+                        query_module._build_date_conditions(filters, ignore_opening)
+                    )
+                assert queries[0] == queries[1]
+                assert legacy[0] == legacy[1]
+                assert (
+                    any("from_date" in condition for condition in legacy[1])
+                    == disable_opening
+                )
+
     def test_party_name_enrichment_gate(self) -> None:
         """Party-name enrichment should trigger only when needed."""
         module = _load_module()
@@ -840,6 +879,62 @@ class TestGeneralLedgerReport(FrappeTestCase):
                 assert doctype in parameters.values()
                 assert "EX" in parameters.values()
                 assert "%Exchange Rate%" in parameters.values()
+
+    def test_bulk_voucher_names_remain_bound_and_doctype_scoped(self) -> None:
+        """Keep quoted names out of SQL and preserve identical names across sources."""
+        enrichment = _load_module()._gl_enrichment
+        name = "shared'voucher%"
+        rows = [
+            _dict(
+                _doctype="Journal Entry", name=name, karam_series="JV", translation=""
+            ),
+            _dict(
+                _doctype="Payment Entry",
+                name=name,
+                karam_series=None,
+                translation="Paid",
+            ),
+        ]
+        with (
+            patch.object(
+                enrichment,
+                "_get_karam_fields_for_doctype",
+                return_value=["name", "karam_series", "translation"],
+            ),
+            patch.object(frappe.db, "sql", return_value=rows) as execute,
+        ):
+            result = enrichment._fetch_voucher_data(
+                {"Journal Entry": {name}, "Payment Entry": {name}, "Quotation": {name}}
+            )
+
+        execute.assert_called_once()
+        sql, parameters = execute.call_args.args
+        assert name not in sql
+        assert "tabQuotation" not in sql
+        assert "UNION ALL" in sql
+        assert list(parameters.values()).count((name,)) == 2
+        assert result[("Journal Entry", name)]["karam_series"] == "JV"
+        assert result[("Payment Entry", name)]["translation"] == "Paid"
+        assert result[("Payment Entry", name)]["karam_series"] is None
+
+    def test_empty_voucher_targets_do_not_query(self) -> None:
+        """An empty source set must never turn into an unrestricted lookup."""
+        enrichment = _load_module()._gl_enrichment
+        with (
+            patch.object(
+                enrichment,
+                "_get_karam_fields_for_doctype",
+                return_value=["name", "karam_series"],
+            ),
+            patch.object(frappe.db, "sql") as execute,
+        ):
+            assert (
+                enrichment._fetch_voucher_data(
+                    {"Journal Entry": set(), "Payment Entry": set()}
+                )
+                == {}
+            )
+        execute.assert_not_called()
 
     def test_dynamic_dimension_filters_are_validated_and_tree_expanded(self) -> None:
         """Only active GL fields become conditions and tree values include children."""

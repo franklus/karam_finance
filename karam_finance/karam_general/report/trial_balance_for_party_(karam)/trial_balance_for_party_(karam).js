@@ -1,6 +1,9 @@
 // Trial Balance for Party (Karam): ERPNext Trial Balance for Party with Account Currency columns
 
 frappe.query_reports["Trial Balance for Party (Karam)"] = {
+  onload(report) {
+    window.karamReportTableUX?.installPreRenderColumnWidths(report);
+  },
   filters: [
     {
       fieldname: "company",
@@ -89,19 +92,12 @@ frappe.query_reports["Trial Balance for Party (Karam)"] = {
   ],
   get_datatable_options(options) {
     return (
-      window.karamReportTableUX?.applyCurrentReportColumnWidths(options, {
-        excludedTrailingRows: 2
-      }) || options
+      window.karamReportTableUX?.applyCurrentReportColumnWidths(options) || options
     );
-  },
-  after_datatable_render() {
-    window.karamReportTableUX?.refreshCurrentReportColumnWidths(frappe.query_report, {
-      excludedTrailingRows: 2
-    });
   },
   formatter(value, row, column, data, default_formatter) {
     let formatted = default_formatter(value, row, column, data);
-    formatted = alignCurrencyWithSharedHelper(
+    formatted = window.alignCurrencyWithSharedHelper(
       "Trial Balance for Party (Karam)",
       value,
       column,

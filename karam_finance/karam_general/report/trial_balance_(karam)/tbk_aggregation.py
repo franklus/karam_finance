@@ -14,7 +14,7 @@ _ACCOUNT_CURRENCIES = "_account_currencies"
 
 def apply_balances_to_accounts(
     accounts: Any, opening_balances: Any, period_balances: Any
-):
+) -> Any:
     """Attach company and account-currency balances to account rows."""
 
     for account in accounts:
@@ -61,17 +61,13 @@ def apply_balances_to_accounts(
 
         currencies = set(opening.get("account_currencies", set()))
         currencies.update(period.get("account_currencies", set()))
-        if not currencies and not account.get("parent_account"):
-            account_currency = account.get("account_currency")
-            if account_currency:
-                currencies.add(account_currency)
         account[_ACCOUNT_CURRENCIES] = currencies
-        account.update({field: 0.0 for field in ACCOUNT_CCY_VALUE_FIELDS})
+        account.update(dict.fromkeys(ACCOUNT_CCY_VALUE_FIELDS, 0.0))
 
 
 def apply_gl_data_to_accounts(
     accounts: Any, gl_data: Any, show_net_values: Any = False
-):
+) -> Any:
     """Compatibility helper for callers that provide already-summed balances."""
 
     for account in accounts:
@@ -114,9 +110,10 @@ def apply_account_currency_data_to_accounts(
     accounts: Any,
     gl_entries_by_account: Any,
     opening_balances_in_account_currency: Any,
+    *,
     show_net_values: Any,
     ignore_is_opening: Any = 0,
-):
+) -> Any:
     """Compatibility helper retained for older direct callers."""
 
     for account in accounts:
@@ -161,7 +158,7 @@ def apply_account_currency_data_to_accounts(
     finalize_account_currency_values(accounts, show_net_values)
 
 
-def accumulate_values_into_parents(accounts: Any, accounts_by_name: Any):
+def accumulate_values_into_parents(accounts: Any, accounts_by_name: Any) -> Any:
     """Accumulate gross balances and currency provenance up the account tree."""
 
     for account in reversed(accounts):
@@ -183,7 +180,9 @@ def accumulate_values_into_parents(accounts: Any, accounts_by_name: Any):
         )
 
 
-def finalize_account_currency_values(accounts: Any, show_net_values: Any = False):
+def finalize_account_currency_values(
+    accounts: Any, show_net_values: Any = False
+) -> Any:
     """Expose account-currency values only when one currency contributes."""
 
     for account in accounts:
@@ -191,7 +190,7 @@ def finalize_account_currency_values(accounts: Any, show_net_values: Any = False
         raw_values = account.get(_RAW_ACCOUNT_CURRENCY_VALUES, {})
         if len(currencies) > 1:
             account["account_currency"] = ""
-            account.update({field: None for field in ACCOUNT_CCY_VALUE_FIELDS})
+            account.update(dict.fromkeys(ACCOUNT_CCY_VALUE_FIELDS))
             continue
 
         if currencies:
@@ -203,7 +202,7 @@ def finalize_account_currency_values(accounts: Any, show_net_values: Any = False
             prepare_account_currency_opening_closing(account)
 
 
-def prepare_opening_closing(row: Any, include_account_currency: Any = True):
+def prepare_opening_closing(row: Any, include_account_currency: Any = True) -> Any:
     root_type = row.get("root_type")
     if not root_type:
         return
@@ -226,7 +225,7 @@ def prepare_opening_closing(row: Any, include_account_currency: Any = True):
         prepare_account_currency_opening_closing(row)
 
 
-def prepare_account_currency_opening_closing(row: Any):
+def prepare_account_currency_opening_closing(row: Any) -> Any:
     root_type = row.get("root_type")
     if not root_type:
         return

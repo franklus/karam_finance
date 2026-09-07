@@ -1,9 +1,13 @@
 // Trial Balance (Karam): ERPNext Trial Balance with Account Currency columns
 
 function trialBalanceKaramFormatter(value, row, column, data, default_formatter) {
-  // Return empty string for spacer and total rows (total shown in sticky footer)
-  if (data && (data.is_spacer || data.is_total)) {
+  // Keep the calculated total visible; only spacer rows are blank.
+  if (data?.is_spacer) {
     return "";
+  }
+  if (data?.is_total && column.fieldname === "account") {
+    const totalColumn = { ...column, fieldtype: "Data", link_onclick: null };
+    return `<strong>${default_formatter(__("Total"), row, totalColumn, data)}</strong>`;
   }
   const formatted = erpnext.financial_statements.formatter(
     value,
@@ -12,12 +16,8 @@ function trialBalanceKaramFormatter(value, row, column, data, default_formatter)
     data,
     default_formatter
   );
-  let extra = "";
-  if (data && !data.parent_account) extra += "font-weight:bold;";
-  if (data && data.warn_if_negative && data[column.fieldname] < 0) {
-    extra += "color:var(--red-500);";
-  }
-  return alignCurrencyWithSharedHelper(
+  const extra = trialBalanceKaramStyle(data, column);
+  return window.alignCurrencyWithSharedHelper(
     "Trial Balance (Karam)",
     value,
     column,
@@ -26,24 +26,18 @@ function trialBalanceKaramFormatter(value, row, column, data, default_formatter)
   );
 }
 
-function setDateRangeModeRequirements(query_report) {
-  const ignoreFiscalYear = query_report.get_filter_value("ignore_fiscal_year");
-  const requiredFilters = {
-    fiscal_year: !ignoreFiscalYear,
-    from_date: ignoreFiscalYear,
-    to_date: ignoreFiscalYear
-  };
-
-  Object.entries(requiredFilters).forEach(([fieldname, isRequired]) => {
-    const filter = query_report.get_filter(fieldname);
-    filter.df.reqd = isRequired ? 1 : 0;
-    filter.refresh();
-  });
-}
-
 frappe.query_reports["Trial Balance (Karam)"] = {
+  separate_check_filters: true,
   onload(query_report) {
-    setDateRangeModeRequirements(query_report);
+    return frappe
+      .require(
+        "/assets/karam_finance/js/report_utils/trial_balance_reporting_filters.js"
+      )
+      .then(() =>
+        window.setupTrialBalanceFilters(query_report, {
+          excludedRowFlags: ["is_spacer"]
+        })
+      );
   },
   filters: [
     {
@@ -62,10 +56,7 @@ frappe.query_reports["Trial Balance (Karam)"] = {
       default: erpnext.utils.get_fiscal_year(frappe.datetime.get_today()),
       reqd: 1,
       on_change(query_report) {
-        const { fiscal_year, ignore_fiscal_year } = query_report.get_values();
-        if (ignore_fiscal_year) {
-          return;
-        }
+        const { fiscal_year } = query_report.get_values();
         if (!fiscal_year) {
           return;
         }
@@ -76,15 +67,6 @@ frappe.query_reports["Trial Balance (Karam)"] = {
             to_date: fy.year_end_date
           });
         });
-      }
-    },
-    {
-      fieldname: "ignore_fiscal_year",
-      label: __("Ignore Fiscal Year"),
-      fieldtype: "Check",
-      default: 0,
-      on_change(query_report) {
-        setDateRangeModeRequirements(query_report);
       }
     },
     {
@@ -178,14 +160,9 @@ frappe.query_reports["Trial Balance (Karam)"] = {
   get_datatable_options(options) {
     return (
       window.karamReportTableUX?.applyCurrentReportColumnWidths(options, {
-        excludedRowFlags: ["is_spacer", "is_total"]
+        excludedRowFlags: ["is_spacer"]
       }) || options
     );
-  },
-  after_datatable_render() {
-    window.karamReportTableUX?.refreshCurrentReportColumnWidths(frappe.query_report, {
-      excludedRowFlags: ["is_spacer", "is_total"]
-    });
   },
   after_refresh(report) {
     window.karamReportTableUX?.removeTreeFooter(report);
@@ -196,4 +173,15 @@ frappe.query_reports["Trial Balance (Karam)"] = {
   initial_depth: 3
 };
 
-erpnext.utils.add_dimensions("Trial Balance (Karam)", 6);
+erpnext.utils.add_dimensions("Trial Balance (Karam)", 5);
+
+function trialBalanceKaramStyle(data, column) {
+  let extra = "";
+  if (data && !data.parent_account) {
+    extra += "font-weight:bold;";
+  }
+  if (data && data.warn_if_negative && data[column.fieldname] < 0) {
+    extra += "color:var(--red-500);";
+  }
+  return extra;
+}

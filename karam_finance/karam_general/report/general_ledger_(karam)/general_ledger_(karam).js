@@ -32,7 +32,9 @@ function getKaramGeneralLedgerContext(report) {
 
 function setupKaramGeneralLedgerFilterGroups(report) {
   const area = report.check_filter_area;
-  if (!area?.length) return;
+  if (!area?.length) {
+    return;
+  }
 
   const groups = [
     [
@@ -66,7 +68,9 @@ function setupKaramGeneralLedgerFilterGroups(report) {
       $("<div>", { class: "karam-gl-filter-group__heading" }).text(__(label))
     );
     fieldnames.forEach((fieldname) => {
-      if (filterMap[fieldname]) group.append(filterMap[fieldname].wrapper);
+      if (filterMap[fieldname]) {
+        group.append(filterMap[fieldname].wrapper);
+      }
     });
     area.append(group);
   });
@@ -82,12 +86,21 @@ function formatKaramGeneralLedgerFooterCell(column, row) {
     return "";
   }
 
+  return formatKaramGeneralLedgerFooterValue(column, row);
+}
+
+function formatKaramGeneralLedgerFooterValue(column, row) {
+  const ux = getKaramGeneralLedgerUX();
   let value = row[column.id];
   if (column.id === "account" && typeof value === "string") {
     value = value.replace(/^['"]|['"]$/g, "");
   }
-  if (value === null || value === undefined || value === "") return "";
-  if (column.id === "account") return ux.escapeHtml(value);
+  if ([null, undefined, ""].includes(value)) {
+    return "";
+  }
+  if (column.id === "account") {
+    return ux.escapeHtml(value);
+  }
   return column.format ? column.format(value, null, column, row) : ux.escapeHtml(value);
 }
 
@@ -126,7 +139,9 @@ function getKaramGeneralLedgerDatatableView(report, columns) {
 }
 
 function applyKaramGeneralLedgerDatatableOptions(options) {
-  if (!options || !Array.isArray(options.data)) return options;
+  if (!options || !Array.isArray(options.data)) {
+    return options;
+  }
   const datatableOptions = options;
   datatableOptions.serialNoColumn = false;
   return datatableOptions;
@@ -135,19 +150,26 @@ function applyKaramGeneralLedgerDatatableOptions(options) {
 function renderKaramGeneralLedgerFooterRows(report, datatable) {
   const context = getKaramGeneralLedgerContext(report);
   const footer = datatable?.footer;
-  if (!footer) return;
+  if (!footer) {
+    return;
+  }
 
   $(footer).find(".karam-gl-summary-row").remove();
   context.footerRows
     .filter((row) => row.row_type !== "separator")
     .forEach((footerData) => {
       const row = $("<div>", {
-        class: `karam-gl-summary-row karam-gl-summary-row-${footerData.row_type}`
+        class: `dt-row karam-gl-summary-row karam-gl-summary-row-${footerData.row_type}`
       });
       datatable.datamanager.getColumns().forEach((column) => {
-        const cell = $("<div>", { class: "karam-gl-summary-cell" });
-        cell.css({ width: `${column.width}px` });
-        cell.html(formatKaramGeneralLedgerFooterCell(column, footerData));
+        const cell = $("<div>", {
+          class: `dt-cell dt-cell--col-${column.colIndex} karam-gl-summary-cell`
+        });
+        const content = $("<div>", {
+          class: `dt-cell__content dt-cell__content--col-${column.colIndex}`
+        });
+        content.html(formatKaramGeneralLedgerFooterCell(column, footerData));
+        cell.append(content);
         row.append(cell);
       });
       $(footer).append(row);
@@ -156,10 +178,18 @@ function renderKaramGeneralLedgerFooterRows(report, datatable) {
 
 function installKaramGeneralLedgerPreRender(report) {
   const target = report;
-  if (target._karamGeneralLedgerPreRenderInstalled) return;
+  if (target._karamGeneralLedgerPreRenderInstalled) {
+    return;
+  }
 
   const originalRenderDatatable = target.render_datatable;
   target.render_datatable = function renderKaramGeneralLedgerDatatable(...args) {
+    // Frappe reuses the QueryReport instance when navigating between reports.
+    if (this.report_name !== "General Ledger (Karam)") {
+      this.$report?.next(".karam-gl-pagination").remove();
+      this.$report?.find(".karam-gl-summary-row").remove();
+      return originalRenderDatatable.apply(this, args);
+    }
     const sourceData = this.data;
     const sourceColumns = this.columns;
     if (!Array.isArray(sourceData) || !Array.isArray(sourceColumns)) {
@@ -188,7 +218,9 @@ function installKaramGeneralLedgerPreRender(report) {
 function updateKaramGeneralLedgerPaginationControls(report) {
   const context = getKaramGeneralLedgerContext(report);
   const controls = report.$report.next(".karam-gl-pagination");
-  if (!controls.length) return;
+  if (!controls.length) {
+    return;
+  }
 
   const range = context.pagination.getRange();
   controls
@@ -230,11 +262,9 @@ function rerenderKaramGeneralLedgerPage(report) {
   target.render_datatable();
 }
 
-function setupKaramGeneralLedgerPagination(report) {
-  let controls = report.$report.next(".karam-gl-pagination");
-  if (!controls.length) {
-    controls = $(
-      `<div class="karam-gl-pagination" role="navigation" aria-label="${__("Report pagination")}">
+function createKaramGeneralLedgerPaginationControls(report) {
+  return $(
+    `<div class="karam-gl-pagination" role="navigation" aria-label="${__("Report pagination")}">
         <span class="karam-gl-pagination__status" role="status"
           aria-live="polite"></span>
         <div class="karam-gl-pagination__controls">
@@ -270,7 +300,13 @@ function setupKaramGeneralLedgerPagination(report) {
           <button type="button" class="btn btn-default btn-sm" data-karam-gl-page="last">${__("Last")}</button>
         </div>
       </div>`
-    ).insertAfter(report.$report);
+  ).insertAfter(report.$report);
+}
+
+function setupKaramGeneralLedgerPagination(report) {
+  let controls = report.$report.next(".karam-gl-pagination");
+  if (!controls.length) {
+    controls = createKaramGeneralLedgerPaginationControls(report);
 
     controls.on("click", "[data-karam-gl-page]", (event) => {
       const context = getKaramGeneralLedgerContext(report);
@@ -302,7 +338,9 @@ function setupKaramGeneralLedgerPagination(report) {
 }
 
 function installKaramGeneralLedgerFullDataActions(report) {
-  if (report._karamGeneralLedgerFullDataActionsInstalled) return;
+  if (report._karamGeneralLedgerFullDataActionsInstalled) {
+    return;
+  }
   const ux = getKaramGeneralLedgerUX();
   const target = report;
 
@@ -356,7 +394,7 @@ frappe.query_reports["General Ledger (Karam)"] = {
       return "";
     }
     const formatted = default_formatter(value, row, column, data);
-    return alignCurrencyWithSharedHelper(
+    return window.alignCurrencyWithSharedHelper(
       "General Ledger (Karam)",
       value,
       column,
@@ -452,9 +490,13 @@ frappe.query_reports["General Ledger (Karam)"] = {
       label: __("Party"),
       fieldtype: "MultiSelectList",
       get_data(txt) {
-        if (!frappe.query_report.filters) return undefined;
+        if (!frappe.query_report.filters) {
+          return undefined;
+        }
         const party_type = frappe.query_report.get_filter_value("party_type");
-        if (!party_type) return undefined;
+        if (!party_type) {
+          return undefined;
+        }
         return frappe.db.get_link_options(party_type, txt);
       },
       on_change() {

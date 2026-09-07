@@ -14,11 +14,14 @@ Phase 5: Bulk Insert
 """
 
 import hashlib
-from typing import Any
+from datetime import date
+from typing import Any, cast
 
 import frappe
 from frappe import _
 from frappe.utils import flt, get_datetime, getdate, now
+
+from .validation import get_reporting_company
 
 DOCTYPE_RC_GLE = "Reporting Currency GLE"
 DOCTYPE_RC_SETTINGS = "Reporting Currency Settings"
@@ -42,9 +45,10 @@ def _get_accounts_with_totals(
     excluded_accounts_condition: str,
     until_date: str,
 ) -> list[dict[str, Any]]:
-    """Return RC GLE accounts that require DOE along with aggregated totals.
+    """Return DOE account groups with their aggregated non-DOE RCGLE totals.
 
-    Aggregates all non-DOE RC GLE records from the beginning until until_date.
+    Receivable and Payable accounts are split by party. All other accounts keep
+    their existing account-level aggregation.
 
     Args:
         company: Company name
@@ -53,28 +57,134 @@ def _get_accounts_with_totals(
         until_date: End date for filtering RC GLE records (inclusive)
 
     Returns:
-        List of account dicts with aggregated totals
+        List of account-group dicts with aggregated totals
     """
     return frappe.db.sql(  # nosemgrep — parameterised values
         f"""
 		SELECT
-			account,
-			account_currency,
-			COALESCE(SUM(debit), 0) AS total_debit,
-			COALESCE(SUM(credit), 0) AS total_credit,
-			COALESCE(SUM(reporting_debit), 0) AS total_reporting_debit,
-			COALESCE(SUM(reporting_credit), 0) AS total_reporting_credit
-		FROM `tab{DOCTYPE_RC_GLE}`
-		WHERE company = %s
-			AND account_currency != %s
-			AND posting_date <= %s
+			rc.account,
+			rc.account_currency,
+			CASE
+				WHEN account.account_type IN ('Receivable', 'Payable')
+				THEN COALESCE(rc.party, '')
+				ELSE ''
+			END AS party,
+			CASE
+				WHEN account.account_type IN ('Receivable', 'Payable')
+				THEN COALESCE(rc.party_type, '')
+				ELSE ''
+			END AS party_type,
+			account.account_type,
+			COALESCE(SUM(rc.debit), 0) AS total_debit,
+			COALESCE(SUM(rc.credit), 0) AS total_credit,
+			COALESCE(SUM(rc.reporting_debit), 0) AS total_reporting_debit,
+			COALESCE(SUM(rc.reporting_credit), 0) AS total_reporting_credit
+		FROM `tab{DOCTYPE_RC_GLE}` rc
+		INNER JOIN `tabAccount` account ON account.name = rc.account
+		WHERE rc.company = %s
+			AND rc.reporting_doe = 0
+            AND COALESCE(rc.is_cancelled, 0) = 0
+			AND rc.account_currency != %s
+			AND rc.posting_date <= %s
 			{excluded_accounts_condition}
-		GROUP BY account, account_currency
-		ORDER BY account
+		GROUP BY
+			rc.account,
+			rc.account_currency,
+			account.account_type,
+			CASE
+				WHEN account.account_type IN ('Receivable', 'Payable')
+				THEN COALESCE(rc.party, '')
+				ELSE ''
+			END,
+			CASE
+				WHEN account.account_type IN ('Receivable', 'Payable')
+				THEN COALESCE(rc.party_type, '')
+				ELSE ''
+			END
+		ORDER BY rc.account, party_type, party
 		""",  # noqa: S608
         (company, reporting_currency, until_date),
         as_dict=True,
     )
+
+
+def _create_doe_records_for_groups(  # noqa: PLR0913, PLR0917
+    account_groups: list[dict[str, Any]],
+    company: str,
+    reporting_currency: str,
+    exchange_rate: float,
+    doe_posting_date: str,
+    profit_account: str,
+    loss_account: str,
+    fiscal_year: str,
+    name_counter: dict[str, Any],
+    profit_loss_currency_map: dict[str, str | None],
+    prior_doe_by_group: dict[tuple[str, str, str | None, str | None], dict[str, float]],
+) -> tuple[list[dict[str, Any]], int]:
+    """Create DOE pairs for account-level or account-and-party-level groups."""
+    records: list[dict[str, Any]] = []
+    processed_count = 0
+
+    for account_info in account_groups:
+        account = account_info["account"]
+        account_currency = account_info["account_currency"]
+        party = account_info.get("party") or None
+        party_type = account_info.get("party_type") or None
+        group_key = (account, account_currency, party_type, party)
+
+        # Earlier DOE parameter rows must affect only the same account/party.
+        adjusted_totals = dict(account_info)
+        if group_key in prior_doe_by_group:
+            prior = prior_doe_by_group[group_key]
+            adjusted_totals["total_reporting_debit"] = (
+                flt(adjusted_totals["total_reporting_debit"]) + prior["reporting_debit"]
+            )
+            adjusted_totals["total_reporting_credit"] = (
+                flt(adjusted_totals["total_reporting_credit"])
+                + prior["reporting_credit"]
+            )
+
+        computed_data = _compute_doe_for_account(
+            company=company,
+            account=account,
+            _account_currency=account_currency,
+            _reporting_currency=reporting_currency,
+            exchange_rate=exchange_rate,
+            account_totals=adjusted_totals,
+        )
+
+        if (
+            computed_data is None
+            or abs(computed_data.get("final_amount", 0)) < DOE_ZERO_THRESHOLD
+        ):
+            continue
+
+        group_records = _create_doe_records(
+            account=account,
+            account_currency=account_currency,
+            party=party,
+            party_type=party_type,
+            computed_data=computed_data,
+            doe_posting_date=doe_posting_date,
+            profit_account=profit_account,
+            loss_account=loss_account,
+            reporting_currency=reporting_currency,
+            fiscal_year=fiscal_year,
+            company=company,
+            name_counter=name_counter,
+            profit_loss_currency_map=profit_loss_currency_map,
+        )
+        records.extend(group_records)
+        processed_count += 1
+
+        # Record 0 is always the revalued account leg, not the P&L offset leg.
+        prior = prior_doe_by_group.setdefault(
+            group_key, {"reporting_debit": 0.0, "reporting_credit": 0.0}
+        )
+        prior["reporting_debit"] += flt(group_records[0].get("reporting_debit", 0))
+        prior["reporting_credit"] += flt(group_records[0].get("reporting_credit", 0))
+
+    return records, processed_count
 
 
 def _get_profit_loss_currency_map(
@@ -110,7 +220,7 @@ def _get_profit_loss_currency_map(
 # ============================================================================
 
 
-@frappe.whitelist()  # nosemgrep — RC module, UI-controlled access
+@frappe.whitelist()
 def compute_doe(background: bool = True) -> dict[str, Any]:
     """Main entry point for DOE computation.
 
@@ -120,6 +230,7 @@ def compute_doe(background: bool = True) -> dict[str, Any]:
     Returns:
             dict: Job ID if background=True, or result dict if background=False
     """
+    frappe.only_for("System Manager")
     # Get settings (Single DocType)
     settings = frappe.get_single(DOCTYPE_RC_SETTINGS)
 
@@ -143,7 +254,7 @@ def compute_doe(background: bool = True) -> dict[str, Any]:
     return _compute_doe_background()
 
 
-def _compute_doe_background() -> dict[str, Any]:  # noqa: PLR0915
+def _compute_doe_background() -> dict[str, Any]:
     """Background job for DOE computation.
 
     This is the main orchestrator that runs all 5 phases.
@@ -166,7 +277,7 @@ def _compute_doe_background() -> dict[str, Any]:  # noqa: PLR0915
 
         settings = frappe.get_single(DOCTYPE_RC_SETTINGS)
 
-        company = frappe.db.get_value(DOCTYPE_RC_GLE, {"reporting_doe": 0}, "company")
+        company = get_reporting_company()
 
         if not company:
             frappe.throw(_("No RC GLE records found. Please run sync first."))
@@ -205,7 +316,7 @@ def _compute_doe_background() -> dict[str, Any]:  # noqa: PLR0915
                 [frappe.db.escape(acc) for acc in excluded_accounts]
             )
             excluded_accounts_condition = (
-                f"AND account NOT IN ({excluded_accounts_str})"
+                f"AND rc.account NOT IN ({excluded_accounts_str})"
             )
 
         # Sort rc_parameters by doe_posting_date ascending
@@ -238,14 +349,16 @@ def _compute_doe_background() -> dict[str, Any]:  # noqa: PLR0915
 
         name_counters_by_year: dict[int, dict[str, Any]] = {}
 
-        # Track prior DOE amounts per account for subsequent row calculations
+        # Track prior DOE amounts per account/party group for subsequent rows.
         # This is needed because DOE records are bulk inserted at the end,
         # so subsequent rows can't see prior DOE via database queries
-        prior_doe_by_account: dict[str, dict[str, float]] = {}
+        prior_doe_by_group: dict[
+            tuple[str, str, str | None, str | None], dict[str, float]
+        ] = {}
 
         for row_idx, row in enumerate(sorted_params):
             exchange_rate = flt(row.exchange_rate)
-            doe_posting_date = getdate(row.doe_posting_date)
+            doe_posting_date = cast("date", getdate(row.doe_posting_date))
             profit_account = row.profit_account
             loss_account = row.loss_account
 
@@ -276,83 +389,36 @@ def _compute_doe_background() -> dict[str, Any]:  # noqa: PLR0915
                 )
             name_counter = name_counters_by_year[doe_year]
 
-            # Get accounts with cumulative totals from beginning until doe_posting_date
-            accounts = _get_accounts_with_totals(
+            # Get cumulative totals from the beginning until doe_posting_date.
+            account_groups = _get_accounts_with_totals(
                 company=company,
-                reporting_currency=settings.reporting_currency,
+                reporting_currency=cast("str", settings.reporting_currency),
                 excluded_accounts_condition=excluded_accounts_condition,
                 until_date=doe_posting_date.isoformat(),
             )
 
-            if not accounts:
+            if not account_groups:
                 msg = f"Row {row.idx} (until {doe_posting_date}): No accounts"
                 _publish_progress(
                     40 + int((row_idx + 1) / len(sorted_params) * 45), msg
                 )
                 continue
 
-            for account_info in accounts:
-                account = account_info.account
-                account_currency = account_info.account_currency
-
-                # Adjust totals with prior DOE amounts (not yet in database)
-                adjusted_totals = dict(account_info)
-                if account in prior_doe_by_account:
-                    prior = prior_doe_by_account[account]
-                    adjusted_totals["total_reporting_debit"] = (
-                        flt(adjusted_totals["total_reporting_debit"])
-                        + prior["reporting_debit"]
-                    )
-                    adjusted_totals["total_reporting_credit"] = (
-                        flt(adjusted_totals["total_reporting_credit"])
-                        + prior["reporting_credit"]
-                    )
-
-                computed_data = _compute_doe_for_account(
-                    company=company,
-                    account=account,
-                    _account_currency=account_currency,
-                    _reporting_currency=settings.reporting_currency,
-                    exchange_rate=exchange_rate,
-                    account_totals=adjusted_totals,
-                )
-
-                if computed_data is None:
-                    continue
-
-                if abs(computed_data.get("final_amount", 0)) < DOE_ZERO_THRESHOLD:
-                    continue
-
-                records = _create_doe_records(
-                    account=account,
-                    account_currency=account_currency,
-                    computed_data=computed_data,
-                    doe_posting_date=doe_posting_date,
-                    profit_account=profit_account,
-                    loss_account=loss_account,
-                    reporting_currency=settings.reporting_currency,
-                    fiscal_year=fiscal_year,
-                    company=company,
-                    name_counter=name_counter,
-                    profit_loss_currency_map=profit_loss_currency_map,
-                )
-
-                doe_records.extend(records)
-                total_processed_count += 1
-
-                # Track this DOE for subsequent rows
-                # Record 0 is always for the main account (not profit/loss)
-                if account not in prior_doe_by_account:
-                    prior_doe_by_account[account] = {
-                        "reporting_debit": 0.0,
-                        "reporting_credit": 0.0,
-                    }
-                prior_doe_by_account[account]["reporting_debit"] += flt(
-                    records[0].get("reporting_debit")
-                )
-                prior_doe_by_account[account]["reporting_credit"] += flt(
-                    records[0].get("reporting_credit")
-                )
+            records, processed_count = _create_doe_records_for_groups(
+                account_groups=account_groups,
+                company=company,
+                reporting_currency=cast("str", settings.reporting_currency),
+                exchange_rate=exchange_rate,
+                doe_posting_date=doe_posting_date.isoformat(),
+                profit_account=profit_account,
+                loss_account=loss_account,
+                fiscal_year=fiscal_year,
+                name_counter=name_counter,
+                profit_loss_currency_map=profit_loss_currency_map,
+                prior_doe_by_group=prior_doe_by_group,
+            )
+            doe_records.extend(records)
+            total_processed_count += processed_count
 
             progress = 40 + int((row_idx + 1) / len(sorted_params) * 45)
             msg = f"Completed row {row.idx} (until {doe_posting_date})"
@@ -430,7 +496,7 @@ def compute_doe_inline(
     try:
         settings = frappe.get_single(DOCTYPE_RC_SETTINGS)
 
-        company = frappe.db.get_value(DOCTYPE_RC_GLE, {"reporting_doe": 0}, "company")
+        company = get_reporting_company()
 
         if not company:
             return {
@@ -462,7 +528,7 @@ def compute_doe_inline(
                 [frappe.db.escape(acc) for acc in excluded_accounts]
             )
             excluded_accounts_condition = (
-                f"AND account NOT IN ({excluded_accounts_str})"
+                f"AND rc.account NOT IN ({excluded_accounts_str})"
             )
 
         # Sort rc_parameters by doe_posting_date ascending
@@ -486,15 +552,17 @@ def compute_doe_inline(
         # Track name counters per doe_posting_date year to avoid collisions
         name_counters_by_year: dict[int, dict[str, Any]] = {}
 
-        # Track prior DOE amounts per account for subsequent row calculations
+        # Track prior DOE amounts per account/party group for subsequent rows.
         # This is needed because DOE records are bulk inserted at the end,
         # so subsequent rows can't see prior DOE via database queries
-        prior_doe_by_account: dict[str, dict[str, float]] = {}
+        prior_doe_by_group: dict[
+            tuple[str, str, str | None, str | None], dict[str, float]
+        ] = {}
 
         # Process each rc_parameters row (oldest to newest by doe_posting_date)
         for row in sorted_params:
             exchange_rate = flt(row.exchange_rate)
-            doe_posting_date = getdate(row.doe_posting_date)
+            doe_posting_date = cast("date", getdate(row.doe_posting_date))
             profit_account = row.profit_account
             loss_account = row.loss_account
 
@@ -525,79 +593,32 @@ def compute_doe_inline(
                 )
             name_counter = name_counters_by_year[doe_year]
 
-            # Get accounts with cumulative totals from beginning until doe_posting_date
-            accounts = _get_accounts_with_totals(
+            # Get cumulative totals from the beginning until doe_posting_date.
+            account_groups = _get_accounts_with_totals(
                 company=company,
-                reporting_currency=settings.reporting_currency,
+                reporting_currency=cast("str", settings.reporting_currency),
                 excluded_accounts_condition=excluded_accounts_condition,
                 until_date=doe_posting_date.isoformat(),
             )
 
-            if not accounts:
+            if not account_groups:
                 continue
 
-            for account_info in accounts:
-                account = account_info.account
-                account_currency = account_info.account_currency
-
-                # Adjust totals with prior DOE amounts (not yet in database)
-                adjusted_totals = dict(account_info)
-                if account in prior_doe_by_account:
-                    prior = prior_doe_by_account[account]
-                    adjusted_totals["total_reporting_debit"] = (
-                        flt(adjusted_totals["total_reporting_debit"])
-                        + prior["reporting_debit"]
-                    )
-                    adjusted_totals["total_reporting_credit"] = (
-                        flt(adjusted_totals["total_reporting_credit"])
-                        + prior["reporting_credit"]
-                    )
-
-                computed_data = _compute_doe_for_account(
-                    company=company,
-                    account=account,
-                    _account_currency=account_currency,
-                    _reporting_currency=settings.reporting_currency,
-                    exchange_rate=exchange_rate,
-                    account_totals=adjusted_totals,
-                )
-
-                if computed_data is None:
-                    continue
-
-                if abs(computed_data.get("final_amount", 0)) < DOE_ZERO_THRESHOLD:
-                    continue
-
-                records = _create_doe_records(
-                    account=account,
-                    account_currency=account_currency,
-                    computed_data=computed_data,
-                    doe_posting_date=doe_posting_date,
-                    profit_account=profit_account,
-                    loss_account=loss_account,
-                    reporting_currency=settings.reporting_currency,
-                    fiscal_year=fiscal_year,
-                    company=company,
-                    name_counter=name_counter,
-                    profit_loss_currency_map=profit_loss_currency_map,
-                )
-
-                doe_records.extend(records)
-                total_processed_count += 1
-
-                # Track this DOE for subsequent rows
-                # Record 0 is always for the main account (not profit/loss)
-                if account not in prior_doe_by_account:
-                    prior_doe_by_account[account] = {
-                        "reporting_debit": 0.0,
-                        "reporting_credit": 0.0,
-                    }
-                prior_doe_by_account[account]["reporting_debit"] += flt(
-                    records[0].get("reporting_debit")
-                )
-                prior_doe_by_account[account]["reporting_credit"] += flt(
-                    records[0].get("reporting_credit")
-                )
+            records, processed_count = _create_doe_records_for_groups(
+                account_groups=account_groups,
+                company=company,
+                reporting_currency=cast("str", settings.reporting_currency),
+                exchange_rate=exchange_rate,
+                doe_posting_date=doe_posting_date.isoformat(),
+                profit_account=profit_account,
+                loss_account=loss_account,
+                fiscal_year=fiscal_year,
+                name_counter=name_counter,
+                profit_loss_currency_map=profit_loss_currency_map,
+                prior_doe_by_group=prior_doe_by_group,
+            )
+            doe_records.extend(records)
+            total_processed_count += processed_count
 
         # Bulk insert all accumulated DOE records
         if doe_records:
@@ -715,9 +736,11 @@ def _compute_doe_for_account(
 # ============================================================================
 
 
-def _create_doe_records(  # noqa: PLR0913
+def _create_doe_records(  # noqa: PLR0913, PLR0917
     account: str,
     account_currency: str,
+    party: str | None,
+    party_type: str | None,
     computed_data: dict[str, Any],
     doe_posting_date: str,
     profit_account: str,
@@ -728,7 +751,7 @@ def _create_doe_records(  # noqa: PLR0913
     name_counter: dict[str, Any],
     profit_loss_currency_map: dict[str, str | None],
 ) -> list[dict[str, Any]]:
-    """Create 2 balanced RC GLE records for the account.
+    """Create 2 balanced RC GLE records for an account or account/party group.
 
     Logic:
     - If final_amount > 0: Debit account, Credit profit_account
@@ -737,6 +760,8 @@ def _create_doe_records(  # noqa: PLR0913
     Args:
             account: Account name
             account_currency: Account's currency
+            party: Party for a Receivable/Payable DOE group, when applicable
+            party_type: Party DocType for a Receivable/Payable DOE group
             computed_data: Dict with computed DOE values
             doe_posting_date: Posting date for DOE entries (from rc_parameters row)
             profit_account: Profit account (from rc_parameters row)
@@ -807,6 +832,8 @@ def _create_doe_records(  # noqa: PLR0913
         "voucher_no": voucher_no,
         "reporting_currency": reporting_currency,
         "company": company,
+        "party": party,
+        "party_type": party_type,
         # Company currency amounts (0 for DOE entries)
         "debit": 0,
         "credit": 0,
@@ -847,7 +874,7 @@ def _create_doe_records(  # noqa: PLR0913
     return [record_1, record_2]
 
 
-def _get_starting_doe_number(posting_date: str) -> dict[str, int]:
+def _get_starting_doe_number(posting_date: str | date) -> dict[str, int]:
     """Get the starting number for DOE naming series.
 
     Returns a dict with 'year' and 'counter' that can be incremented.
@@ -873,7 +900,7 @@ def _get_starting_doe_number(posting_date: str) -> dict[str, int]:
             try:
                 last_number = int(parts[3])
                 next_number = last_number + 1
-            except (ValueError, IndexError):
+            except ValueError, IndexError:
                 next_number = 1
         else:
             next_number = 1
@@ -934,7 +961,7 @@ def _generate_doe_name(_company: str, posting_date: str) -> str:
             try:
                 last_number = int(parts[3])
                 next_number = last_number + 1
-            except (ValueError, IndexError):
+            except ValueError, IndexError:
                 next_number = 1
         else:
             next_number = 1
@@ -959,6 +986,8 @@ def _bulk_insert_doe_records(records: list[dict[str, Any]]) -> None:
         "fiscal_year",
         "account",
         "account_currency",
+        "party_type",
+        "party",
         "against",
         "voucher_type",
         "voucher_no",
@@ -995,6 +1024,8 @@ def _bulk_insert_doe_records(records: list[dict[str, Any]]) -> None:
             record.get("fiscal_year"),
             record.get("account"),
             record.get("account_currency"),
+            record.get("party_type"),
+            record.get("party"),
             record.get("against"),
             record.get("voucher_type"),
             record.get("voucher_no"),

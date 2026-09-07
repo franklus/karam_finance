@@ -210,7 +210,7 @@ def sync_reporting_currency_entries(
 # ============================================================================
 
 
-@frappe.whitelist()  # nosemgrep — permission check below
+@frappe.whitelist()
 def enqueue_reporting_currency_sync() -> dict[str, str]:
     """Queue the RC GLE sync job and return identifiers for realtime updates.
 
@@ -218,6 +218,7 @@ def enqueue_reporting_currency_sync() -> dict[str, str]:
     requires HTML dialog rendering. Heavy processing is deferred to the
     background job for better user experience.
     """
+    frappe.only_for("System Manager")
     if not frappe.has_permission(DOCTYPE_RC_GLE, "write"):
         frappe.throw(
             _("You do not have permission to sync Reporting Currency GLE records."),
@@ -443,13 +444,14 @@ def run_reporting_currency_sync_job(
 # ============================================================================
 
 
-@frappe.whitelist()  # nosemgrep — RC module, UI-controlled access
+@frappe.whitelist()
 def delete_all_entries() -> None:
     """Delete all sync-generated Reporting Currency GLE records.
 
     Preserves manually created records (manual_entry=1).
     Also resets sync timestamps to NULL, triggering full sync on next run.
     """
+    frappe.only_for("System Manager")
     # Delete only sync-generated records, preserve manual entries
     frappe.db.sql(
         "DELETE FROM `tabReporting Currency GLE` "

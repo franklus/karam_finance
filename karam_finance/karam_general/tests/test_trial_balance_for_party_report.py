@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import importlib
+import re
+import sqlite3
 from typing import TYPE_CHECKING
 from unittest.mock import patch
 
@@ -362,3 +364,74 @@ class TestTrialBalanceForPartyReport(FrappeTestCase):
         assert data[0]["party"] == "CUST-001"
         assert data[0]["account_currency"] == "USD"
         assert data[-1]["opening_debit"] == 0.0
+
+    def test_query_date_scope_bounds_opening_and_movement(self) -> None:
+        """Future and cancelled entries stay excluded on both query paths."""
+        module = _load_query_module()
+        with sqlite3.connect(":memory:") as database:
+            database.row_factory = sqlite3.Row
+            database.execute(
+                "CREATE TABLE `tabGL Entry` (party TEXT, party_type TEXT, "
+                "company TEXT, account_currency TEXT, posting_date TEXT, "
+                "is_opening TEXT, is_cancelled INTEGER, debit REAL, credit REAL, "
+                "debit_in_account_currency REAL, credit_in_account_currency REAL)"
+            )
+            database.execute(
+                "CREATE TABLE `tabCustomer` (name TEXT, customer_name TEXT)"
+            )
+            database.executemany(
+                "INSERT INTO `tabCustomer` VALUES (?, ?)",
+                [("CUST-001", "Customer One"), ("CUST-ZERO", "No entries")],
+            )
+            for posting_date, opening, cancelled, amount in [
+                ("2025-12-31", "No", 0, 10),
+                ("2026-01-01", "No", 0, 20),
+                ("2026-12-31", "No", 0, 30),
+                ("2026-06-01", "Yes", 0, 40),
+                ("2027-01-01", "No", 0, 800),
+                ("2027-01-01", "Yes", 0, 900),
+                ("2026-06-01", "No", 1, 700),
+            ]:
+                database.execute(
+                    "INSERT INTO `tabGL Entry` VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    (
+                        "CUST-001",
+                        "Customer",
+                        "Karam",
+                        "USD",
+                        posting_date,
+                        opening,
+                        cancelled,
+                        amount,
+                        0,
+                        amount,
+                        0,
+                    ),
+                )
+
+            def execute_sql(
+                query: str,
+                values: dict[str, str | int | float | None] | None = None,
+                **_kwargs: object,
+            ) -> list[_dict[str, str | int | float | None]]:
+                # Adapt only MariaDB's index hint and parameter syntax.
+                query = re.sub(r" FORCE INDEX \([^)]*\)", "", query)
+                query = re.sub(r"%\(([^)]+)\)s", r":\1", query)
+                return [
+                    _dict(dict(row)) for row in database.execute(query, values or {})
+                ]
+
+            with patch.object(module.frappe.db, "sql", side_effect=execute_sql):
+                for include_all in (False, True):
+                    rows = module._run_party_currency_query(
+                        _filters(),
+                        party_name_field="customer_name",
+                        include_all_parties=include_all,
+                    )
+                    row = next(row for row in rows if row.party == "CUST-001")
+                    assert row.opening_net == 50
+                    assert row.debit == 50
+                    assert row.credit == 0
+                    assert row.opening_net_in_account_currency == 50
+                    assert row.debit_in_account_currency == 50
+                    assert len(rows) == (2 if include_all else 1)

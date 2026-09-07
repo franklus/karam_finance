@@ -82,13 +82,8 @@
 }
 
 .karam-gl-summary-cell {
-  box-sizing: border-box;
   flex: 0 0 auto;
-  padding: var(--dt-spacer-2, 8px);
-  border-right: 1px solid var(--border-color);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  background: var(--subtle-fg);
 }
 
 @media (max-width: 1200px) {

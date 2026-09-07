@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 import frappe
 from frappe.query_builder import Criterion, NullValue
 from frappe.query_builder.terms import ParameterizedValueWrapper as ValueWrapper
+from pypika.queries import QueryBuilder, Table
+from pypika.terms import Parameter, Term
 
 from karam_finance.karam_series.constants.constants import KARAM_DOCTYPES
 
@@ -18,7 +20,9 @@ VOUCHER_LOOKUP_BATCH_SIZE = 1000
 _KARAM_FIELDS_CACHE: dict[str, list[str]] = {}
 
 
-def get_party_name_map(gl_entries: list[frappe._dict]) -> dict[str, dict[str, str]]:
+def get_party_name_map(
+    gl_entries: list[frappe._dict[str, Any]],
+) -> dict[str, dict[str, str]]:
     """Build a party map using one bounded lookup per supported party type."""
     if not gl_entries:
         return {}
@@ -64,9 +68,9 @@ def _fetch_party_names(doctype: str, fieldname: str, names: set[str]) -> dict[st
 
 
 def _attach_series_translation(
-    gl_entries: list[frappe._dict],
+    gl_entries: list[frappe._dict[str, Any]],
     include_journal_entries: bool = True,
-    preloaded_voucher_data: dict[tuple[str, str], dict] | None = None,
+    preloaded_voucher_data: dict[tuple[str, str], dict[str, Any]] | None = None,
 ) -> None:
     """Populate Karam fields for every supported voucher type in one query."""
     if not gl_entries:
@@ -86,7 +90,7 @@ def _attach_series_translation(
 
 
 def _collect_voucher_names(
-    gl_entries: list[frappe._dict], include_journal_entries: bool = True
+    gl_entries: list[frappe._dict[str, Any]], include_journal_entries: bool = True
 ) -> dict[str, set[str]]:
     """Collect distinct source names without building a per-row index."""
     targets: dict[str, set[str]] = {}
@@ -107,11 +111,11 @@ def _collect_voucher_names(
 
 
 def _collect_voucher_targets(
-    gl_entries: list[frappe._dict], include_journal_entries: bool = True
-) -> tuple[dict[str, set[str]], dict[tuple[str, str], list[frappe._dict]]]:
+    gl_entries: list[frappe._dict[str, Any]], include_journal_entries: bool = True
+) -> tuple[dict[str, set[str]], dict[tuple[str, str], list[frappe._dict[str, Any]]]]:
     """Collect voucher names and index all rows sharing each source voucher."""
     targets: dict[str, set[str]] = {}
-    entry_index: dict[tuple[str, str], list[frappe._dict]] = {}
+    entry_index: dict[tuple[str, str], list[frappe._dict[str, Any]]] = {}
 
     for entry in gl_entries:
         if entry.get("karam_series") and entry.get("translation"):
@@ -133,7 +137,7 @@ def _collect_voucher_targets(
 
 
 def _hydrate_entries_from_doctype(
-    entry_index: dict[tuple[str, str], list[frappe._dict]],
+    entry_index: dict[tuple[str, str], list[frappe._dict[str, Any]]],
     doctype: str,
     names: set[str],
 ) -> None:
@@ -142,7 +146,9 @@ def _hydrate_entries_from_doctype(
     _apply_voucher_data_to_entries(entry_index, voucher_data)
 
 
-def _get_voucher_data_for_filters(filters: dict) -> dict[tuple[str, str], dict]:
+def _get_voucher_data_for_filters(
+    filters: dict[str, Any],
+) -> dict[tuple[str, str], dict[str, Any]]:
     """Return source vouchers matching Series/Translation filters.
 
     Each supported doctype contributes a SELECT to a single UNION query. The
@@ -161,7 +167,7 @@ def _fetch_voucher_data(
     names_by_doctype: dict[str, set[str]] | None,
     series: str | None = None,
     translation: str | None = None,
-) -> dict[tuple[str, str], dict]:
+) -> dict[tuple[str, str], dict[str, Any]]:
     """Fetch Karam fields for many doctypes in one UNION query."""
     doctypes = (
         KARAM_DOCTYPES
@@ -178,10 +184,14 @@ def _fetch_voucher_data(
 
     queries = [
         query
-        for doctype in doctypes
+        for index, doctype in enumerate(doctypes)
         if (
             query := _build_voucher_query(
-                doctype, names_by_doctype, series=series, translation=translation
+                doctype,
+                names_by_doctype,
+                series=series,
+                translation=translation,
+                names_parameter=f"voucher_names_{index}" if names_by_doctype else None,
             )
         )
     ]
@@ -193,7 +203,15 @@ def _fetch_voucher_data(
     for additional_query in queries[1:]:
         query = query.union_all(additional_query)
 
-    rows = query.run(as_dict=True)
+    sql, parameters = query.walk()
+    if names_by_doctype is not None:
+        parameters.update(
+            {
+                f"voucher_names_{index}": tuple(sorted(names_by_doctype[doctype]))
+                for index, doctype in enumerate(doctypes)
+            }
+        )
+    rows = frappe.db.sql(sql, parameters, as_dict=True)
     return {
         (row["_doctype"], row["name"]): {
             "name": row["name"],
@@ -207,7 +225,7 @@ def _fetch_voucher_data(
 
 def _fetch_single_voucher_data(
     doctype: str, fields: list[str], names: set[str]
-) -> dict[tuple[str, str], dict]:
+) -> dict[tuple[str, str], dict[str, Any]]:
     """Fetch one source doctype without paying UNION construction overhead."""
     source_fields = [
         fieldname
@@ -237,11 +255,12 @@ def _build_voucher_query(
     *,
     series: str | None,
     translation: str | None,
-):
+    names_parameter: str | None = None,
+) -> QueryBuilder | None:
     """Build one allowlisted source query for the union hydration path."""
     fields = _get_karam_fields_for_doctype(doctype)
     if not _voucher_query_is_supported(
-        doctype, fields, names_by_doctype, series, translation
+        doctype, fields, names_by_doctype, series=series, translation=translation
     ):
         return None
 
@@ -249,9 +268,13 @@ def _build_voucher_query(
     criteria = _voucher_query_criteria(
         table,
         fields,
-        names_by_doctype.get(doctype) if names_by_doctype is not None else None,
-        series,
-        translation,
+        Parameter(f"%({names_parameter})s")
+        if names_parameter
+        else names_by_doctype.get(doctype)
+        if names_by_doctype is not None
+        else None,
+        series=series,
+        translation=translation,
     )
 
     return (
@@ -268,6 +291,7 @@ def _voucher_query_is_supported(
     doctype: str,
     fields: list[str],
     names_by_doctype: dict[str, set[str]] | None,
+    *,
     series: str | None,
     translation: str | None,
 ) -> bool:
@@ -283,15 +307,18 @@ def _voucher_query_is_supported(
 
 
 def _voucher_query_criteria(
-    table,
+    table: Table,
     fields: list[str],
-    names: set[str] | None,
+    names: set[str] | Parameter | None,
+    *,
     series: str | None,
     translation: str | None,
-) -> list:
+) -> list[Term]:
     criteria = []
     if names is not None:
-        criteria.append(table.name.isin(sorted(names)))
+        # Bind the complete tuple through the driver instead of building one term per name.
+        values = names if isinstance(names, Parameter) else sorted(names)
+        criteria.append(table.name.isin(values))
     if series:
         criteria.append(table.karam_series == series)
     if translation:
@@ -313,7 +340,7 @@ def _voucher_query_criteria(
     return criteria
 
 
-def _voucher_query_projection(table, fields: list[str]) -> list:
+def _voucher_query_projection(table: Table, fields: list[str]) -> list[Term]:
     return [
         table.name,
         table.karam_series
@@ -332,7 +359,8 @@ def _get_karam_fields_for_doctype(doctype: str) -> list[str]:
 
     try:
         meta = frappe.get_meta(doctype)
-    except Exception as exc:  # pragma: no cover - optional DocType may be absent
+    except frappe.DoesNotExistError as exc:
+        # Optional source DocTypes may be absent; other failures must surface.
         frappe.logger(__name__).warning(
             "Could not get metadata for %s: %s", doctype, exc
         )
@@ -346,17 +374,18 @@ def _get_karam_fields_for_doctype(doctype: str) -> list[str]:
         fields.append("translation")
 
     if len(fields) == 1:
-        fields = []
+        fields.clear()
     _KARAM_FIELDS_CACHE[doctype] = fields
     return fields
 
 
 def _apply_voucher_data_to_entries(
-    entry_index: dict[tuple[str, str], list[frappe._dict]],
-    voucher_data: dict[tuple[str, str], dict],
+    entry_index: dict[tuple[str, str], list[frappe._dict[str, Any]]],
+    voucher_data: dict[tuple[str, str], dict[str, Any]],
     fields: list[str] | None = None,
 ) -> None:
     """Apply one source row to every GL row for that voucher."""
+    del fields  # Retained for compatibility; hydration always uses both Karam fields.
     for (doctype, voucher_no), entries in entry_index.items():
         source_row = voucher_data.get((doctype, voucher_no))
         if not source_row:
@@ -369,7 +398,8 @@ def _apply_voucher_data_to_entries(
 
 
 def _apply_voucher_data_to_gl_entries(
-    gl_entries: list[frappe._dict], voucher_data: dict[tuple[str, str], dict]
+    gl_entries: list[frappe._dict[str, Any]],
+    voucher_data: dict[tuple[str, str], dict[str, Any]],
 ) -> None:
     """Hydrate rows in one pass after the bulk source query."""
     for entry in gl_entries:

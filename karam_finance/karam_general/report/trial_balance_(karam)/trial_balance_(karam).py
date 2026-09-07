@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from typing import Any
+
 from .tbk_aggregation import (
     accumulate_values_into_parents as _accumulate_values_into_parents,
 )
@@ -33,50 +35,56 @@ ACCOUNT_CCY_VALUE_FIELDS = _ACCOUNT_CCY_VALUE_FIELDS
 VALUE_FIELDS = _VALUE_FIELDS
 
 
-def execute(filters=None):
+def execute(filters: Any = None) -> Any:
     validate_filters(filters)
     data = get_data(filters)
     columns = get_columns()
     return columns, data
 
 
-def validate_filters(filters):
+def validate_filters(filters: Any) -> Any:
     return _validate_filters(filters)
 
 
-def get_data(filters):
+def get_data(filters: Any) -> Any:
     return _get_data(filters)
 
 
-def get_gl_data_optimised(filters) -> dict:
+def get_gl_data_optimised(filters: Any) -> dict[str, Any]:
     return _get_gl_data_optimised(filters)
 
 
-def apply_gl_data_to_accounts(accounts, gl_data, show_net_values):
+def apply_gl_data_to_accounts(accounts: Any, gl_data: Any, show_net_values: Any) -> Any:
     return _apply_gl_data_to_accounts(accounts, gl_data, show_net_values)
 
 
-def accumulate_values_into_parents(accounts, accounts_by_name):
+def accumulate_values_into_parents(accounts: Any, accounts_by_name: Any) -> Any:
     return _accumulate_values_into_parents(accounts, accounts_by_name)
 
 
-def get_blank_row():
+def get_blank_row() -> Any:
     return _get_blank_row()
 
 
-def calculate_total_row(accounts, company_currency, show_group_accounts=True):
+def calculate_total_row(
+    accounts: Any, company_currency: Any, show_group_accounts: Any = True
+) -> Any:
     return _calculate_total_row(
         accounts, company_currency, show_group_accounts=show_group_accounts
     )
 
 
-def prepare_data(accounts, filters, parent_children_map, company_currency):
-    return _prepare_data(accounts, filters, parent_children_map, company_currency)
+def prepare_data(
+    accounts: Any, filters: Any, parent_children_map: Any, *, company_currency: Any
+) -> Any:
+    return _prepare_data(
+        accounts, filters, parent_children_map, company_currency=company_currency
+    )
 
 
-def get_columns():
+def get_columns() -> Any:
     return _get_columns()
 
 
-def prepare_opening_closing(row):
+def prepare_opening_closing(row: Any) -> Any:
     return _prepare_opening_closing(row)

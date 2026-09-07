@@ -10,7 +10,9 @@ from frappe import _
 from frappe.query_builder import Criterion
 
 
-def validate_filters(filters: Any, account_details: dict[str, frappe._dict]) -> None:
+def validate_filters(
+    filters: Any, account_details: dict[str, frappe._dict[str, Any]]
+) -> None:
     """Validate report filters and parse JSON fields."""
     filters.pop("show_amount_in_company_currency", None)
     _validate_required_dates(filters)
@@ -37,7 +39,7 @@ def _validate_required_dates(filters: Any) -> None:
 
 
 def _normalise_account_filters(
-    filters: Any, account_details: dict[str, frappe._dict]
+    filters: Any, account_details: dict[str, frappe._dict[str, Any]]
 ) -> None:
     """Parse account filters and reject unknown accounts."""
     if not filters.get("account"):
@@ -65,7 +67,7 @@ def _normalise_list_filters(filters: Any) -> None:
 
 
 def _validate_grouping_filters(
-    filters: Any, account_details: dict[str, frappe._dict]
+    filters: Any, account_details: dict[str, frappe._dict[str, Any]]
 ) -> None:
     """Validate constraints imposed by the selected grouping."""
     if filters.get("account") and filters.get("categorize_by") in (
@@ -86,7 +88,7 @@ def _validate_grouping_filters(
         frappe.throw(_("Can not filter based on Voucher No, if grouped by Voucher"))
 
 
-def _as_list(value):
+def _as_list(value: str | list[str] | tuple[str, ...] | set[str] | None) -> list[str]:
     """Normalise MultiSelectList values without re-parsing existing lists."""
     if value is None:
         return []
@@ -98,11 +100,11 @@ def _as_list(value):
     return [parsed]
 
 
-def _normalise_categorize_by(value):
+def _normalise_categorize_by(value: str | None) -> str | None:
     """Accept both the historical British and upstream American spellings."""
     if not value:
         return value
-    return str(value).replace("Categorize", "Categorise")
+    return value.replace("Categorize", "Categorise")
 
 
 def validate_party(filters: Any) -> None:
@@ -132,18 +134,7 @@ def set_account_currency(filters: Any) -> Any:
         account_currency = None
 
         if filters.get("account"):
-            if len(filters["account"]) == 1:
-                account_currency = get_account_currency(filters.account[0])
-            else:
-                currency = get_account_currency(filters.account[0])
-                is_same_account_currency = True
-                for account in filters.get("account"):
-                    if get_account_currency(account) != currency:
-                        is_same_account_currency = False
-                        break
-
-                if is_same_account_currency:
-                    account_currency = currency
+            account_currency = _selected_accounts_currency(filters["account"])
 
         elif filters.get("party") and filters.get("party_type"):
             gle_currency = frappe.db.get_value(
@@ -174,7 +165,7 @@ def set_account_currency(filters: Any) -> Any:
     return filters
 
 
-def get_accounts_with_children(accounts):
+def get_accounts_with_children(accounts: list[str] | str) -> list[str] | None:
     """Expand group accounts to include children; return leaf accounts as-is.
 
     Only expands accounts that are marked as is_group=1. Leaf accounts
@@ -215,3 +206,11 @@ def get_accounts_with_children(accounts):
     )
 
     return list(set(expanded_accounts) | set(leaf_accounts))
+
+
+def _selected_accounts_currency(accounts: list[str]) -> str | None:
+    """Return the common currency only when all selected accounts agree."""
+    currency = get_account_currency(accounts[0])
+    if all(get_account_currency(account) == currency for account in accounts[1:]):
+        return currency
+    return None

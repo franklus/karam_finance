@@ -1,600 +1,625 @@
 {
-  "actions": [],
-  "autoname": "null",
-  "creation": "2025-10-23 07:16:12.281907",
-  "doctype": "DocType",
-  "engine": "InnoDB",
-  "field_order": [
-    "reference_section",
-    "gl_entry",
-    "column_break_mqqt",
-    "gl_entry_hash",
-    "column_break_mgkf",
-    "gl_entry_modified",
-    "column_break_qkdf",
-    "reporting_doe",
-    "manual_entry",
-    "dates_section",
-    "posting_date",
-    "transaction_date",
-    "column_break_ikug",
-    "fiscal_year",
-    "due_date",
-    "account_details_section",
-    "account",
-    "account_currency",
-    "account_details",
-    "column_break_jwiw",
-    "against",
-    "party_type",
-    "party",
-    "transaction_details_section",
-    "voucher_type",
-    "voucher_no",
-    "voucher_subtype",
-    "transaction_currency",
-    "column_break_upjt",
-    "against_voucher_type",
-    "against_voucher",
-    "voucher_detail_no",
-    "transaction_exchange_rate",
-    "amounts_section",
-    "debit_amount_in_account_currency",
-    "debit",
-    "debit_amount_in_transaction_currency",
-    "column_break_bgzu",
-    "credit_amount_in_account_currency",
-    "credit",
-    "credit_in_transaction_currency",
-    "section_break_lifp",
-    "reporting_currency",
-    "column_break_gucj",
-    "reporting_debit",
-    "column_break_huri",
-    "reporting_credit",
-    "reporting_doe_section",
-    "total_debit_default_currency",
-    "reporting_debit_total",
-    "column_break_bzsc",
-    "total_credit_default_currency",
-    "reporting_credit_total",
-    "column_break_clqz",
-    "difference_default_currency",
-    "difference_reporting_currency",
-    "column_break_slwb",
-    "reporting_doe_difference",
-    "currency_exchange_detalls_section",
-    "currency_exchange",
-    "column_break_vbfo",
-    "date",
-    "column_break_xsmd",
-    "exchange_rate",
-    "dimensions_section",
-    "cost_center",
-    "column_break_mkfh",
-    "project",
-    "more_info_section",
-    "finance_book",
-    "company",
-    "is_opening",
-    "is_advance",
-    "column_break_jwux",
-    "to_rename",
-    "is_cancelled",
-    "remarks",
-    "amended_from"
-  ],
-  "fields": [
-    {
-      "fieldname": "dates_section",
-      "fieldtype": "Section Break",
-      "label": "Dates"
-    },
-    {
-      "fieldname": "posting_date",
-      "fieldtype": "Date",
-      "in_list_view": 1,
-      "label": "Posting Date",
-      "search_index": 1
-    },
-    {
-      "fieldname": "transaction_date",
-      "fieldtype": "Date",
-      "in_list_view": 1,
-      "label": "Transaction Date"
-    },
-    {
-      "fieldname": "column_break_ikug",
-      "fieldtype": "Column Break"
-    },
-    {
-      "fieldname": "fiscal_year",
-      "fieldtype": "Link",
-      "label": "Fiscal Year",
-      "options": "Fiscal Year"
-    },
-    {
-      "fieldname": "due_date",
-      "fieldtype": "Date",
-      "label": "Due Date"
-    },
-    {
-      "fieldname": "account_details_section",
-      "fieldtype": "Section Break",
-      "label": "Account Details"
-    },
-    {
-      "fieldname": "account",
-      "fieldtype": "Link",
-      "in_list_view": 1,
-      "label": "Account",
-      "options": "Account",
-      "search_index": 1
-    },
-    {
-      "fetch_from": "account.account_currency",
-      "fieldname": "account_currency",
-      "fieldtype": "Link",
-      "label": "Account Currency",
-      "options": "Currency"
-    },
-    {
-      "fieldname": "account_details",
-      "fieldtype": "Currency",
-      "label": "Account Details",
-      "length": 30,
-      "precision": "4"
-    },
-    {
-      "fieldname": "column_break_jwiw",
-      "fieldtype": "Column Break"
-    },
-    {
-      "fieldname": "against",
-      "fieldtype": "Text",
-      "label": "Against"
-    },
-    {
-      "fieldname": "party_type",
-      "fieldtype": "Link",
-      "label": "Party Type",
-      "options": "DocType",
-      "search_index": 1
-    },
-    {
-      "fieldname": "party",
-      "fieldtype": "Dynamic Link",
-      "label": "Party",
-      "options": "party_type",
-      "search_index": 1
-    },
-    {
-      "fieldname": "transaction_details_section",
-      "fieldtype": "Section Break",
-      "label": "Transaction Details"
-    },
-    {
-      "fieldname": "voucher_type",
-      "fieldtype": "Link",
-      "label": "Voucher Type",
-      "options": "DocType"
-    },
-    {
-      "fieldname": "voucher_no",
-      "fieldtype": "Dynamic Link",
-      "in_standard_filter": 1,
-      "label": "Voucher No",
-      "options": "voucher_type",
-      "search_index": 1
-    },
-    {
-      "fieldname": "voucher_subtype",
-      "fieldtype": "Small Text",
-      "label": "Voucher Subtype"
-    },
-    {
-      "fieldname": "transaction_currency",
-      "fieldtype": "Link",
-      "label": "Transaction Currency",
-      "options": "Currency"
-    },
-    {
-      "fieldname": "column_break_upjt",
-      "fieldtype": "Column Break"
-    },
-    {
-      "fieldname": "against_voucher_type",
-      "fieldtype": "Link",
-      "in_standard_filter": 1,
-      "label": "Against Voucher Type",
-      "options": "DocType"
-    },
-    {
-      "fieldname": "against_voucher",
-      "fieldtype": "Dynamic Link",
-      "label": "Against Voucher",
-      "options": "against_voucher_type",
-      "search_index": 1
-    },
-    {
-      "fieldname": "voucher_detail_no",
-      "fieldtype": "Data",
-      "label": "Voucher Detail No",
-      "search_index": 1
-    },
-    {
-      "fieldname": "transaction_exchange_rate",
-      "fieldtype": "Float",
-      "label": "Transaction Exchange Rate",
-      "length": 30,
-      "precision": "4"
-    },
-    {
-      "fieldname": "amounts_section",
-      "fieldtype": "Section Break",
-      "label": "Amounts"
-    },
-    {
-      "fieldname": "debit_amount_in_account_currency",
-      "fieldtype": "Currency",
-      "label": "Debit Amount in Account Currency",
-      "length": 30,
-      "options": "account_currency",
-      "precision": "4"
-    },
-    {
-      "fieldname": "debit",
-      "fieldtype": "Currency",
-      "label": "Debit Amount",
-      "length": 30,
-      "options": "Company:company:default_currency",
-      "precision": "4"
-    },
-    {
-      "fieldname": "debit_amount_in_transaction_currency",
-      "fieldtype": "Currency",
-      "label": "Debit Amount in Transaction Currency",
-      "length": 30,
-      "options": "transaction_currency",
-      "precision": "4"
-    },
-    {
-      "fieldname": "column_break_bgzu",
-      "fieldtype": "Column Break"
-    },
-    {
-      "fieldname": "credit_amount_in_account_currency",
-      "fieldtype": "Currency",
-      "label": "Credit Amount in Account Currency",
-      "length": 30,
-      "options": "account_currency",
-      "precision": "4"
-    },
-    {
-      "fieldname": "credit",
-      "fieldtype": "Currency",
-      "label": "Credit Amount",
-      "length": 30,
-      "options": "Company:company:default_currency",
-      "precision": "4"
-    },
-    {
-      "fieldname": "credit_in_transaction_currency",
-      "fieldtype": "Currency",
-      "label": "Credit in Transaction Currency",
-      "length": 30,
-      "options": "transaction_currency",
-      "precision": "4"
-    },
-    {
-      "fieldname": "dimensions_section",
-      "fieldtype": "Section Break",
-      "label": "Dimensions"
-    },
-    {
-      "fieldname": "cost_center",
-      "fieldtype": "Link",
-      "in_list_view": 1,
-      "label": "Cost Center",
-      "options": "Cost Center"
-    },
-    {
-      "fieldname": "column_break_mkfh",
-      "fieldtype": "Column Break"
-    },
-    {
-      "fieldname": "project",
-      "fieldtype": "Link",
-      "label": "Project",
-      "options": "Project"
-    },
-    {
-      "fieldname": "more_info_section",
-      "fieldtype": "Section Break",
-      "label": "More Info"
-    },
-    {
-      "fieldname": "finance_book",
-      "fieldtype": "Link",
-      "label": "Finance Book",
-      "options": "Finance Book"
-    },
-    {
-      "fieldname": "company",
-      "fieldtype": "Link",
-      "label": "Company",
-      "options": "Company",
-      "search_index": 1
-    },
-    {
-      "fieldname": "is_opening",
-      "fieldtype": "Select",
-      "in_filter": 1,
-      "label": "Is Opening",
-      "options": "No\nYes"
-    },
-    {
-      "fieldname": "is_advance",
-      "fieldtype": "Select",
-      "label": "Is Advance",
-      "options": "No\nYes"
-    },
-    {
-      "fieldname": "column_break_jwux",
-      "fieldtype": "Column Break"
-    },
-    {
-      "default": "0",
-      "fieldname": "to_rename",
-      "fieldtype": "Check",
-      "label": "To Rename",
-      "search_index": 1
-    },
-    {
-      "default": "0",
-      "fieldname": "is_cancelled",
-      "fieldtype": "Check",
-      "label": "Is Cancelled"
-    },
-    {
-      "fieldname": "remarks",
-      "fieldtype": "Text",
-      "in_standard_filter": 1,
-      "label": "Remarks",
-      "no_copy": 1
-    },
-    {
-      "fieldname": "reference_section",
-      "fieldtype": "Section Break",
-      "label": "Reference"
-    },
-    {
-      "fieldname": "gl_entry",
-      "fieldtype": "Link",
-      "label": "GL Entry",
-      "options": "GL Entry",
-      "read_only": 1,
-      "unique": 1
-    },
-    {
-      "fieldname": "gl_entry_hash",
-      "fieldtype": "Data",
-      "label": "GL Entry Hash",
-      "length": 16,
-      "no_copy": 1,
-      "read_only": 1,
-      "search_index": 1
-    },
-    {
-      "fieldname": "gl_entry_modified",
-      "fieldtype": "Datetime",
-      "hidden": 1,
-      "label": "GL Entry Modified",
-      "no_copy": 1,
-      "read_only": 1
-    },
-    {
-      "fieldname": "column_break_mqqt",
-      "fieldtype": "Column Break"
-    },
-    {
-      "fieldname": "section_break_lifp",
-      "fieldtype": "Section Break",
-      "label": "Reporting Currency"
-    },
-    {
-      "fieldname": "reporting_debit",
-      "fieldtype": "Currency",
-      "label": "Reporting Debit",
-      "length": 30,
-      "options": "reporting_currency",
-      "precision": "4"
-    },
-    {
-      "fieldname": "column_break_huri",
-      "fieldtype": "Column Break"
-    },
-    {
-      "fieldname": "reporting_credit",
-      "fieldtype": "Currency",
-      "label": "Reporting Credit",
-      "length": 30,
-      "options": "reporting_currency",
-      "precision": "4"
-    },
-    {
-      "fieldname": "amended_from",
-      "fieldtype": "Link",
-      "label": "Amended From",
-      "no_copy": 1,
-      "options": "Reporting Currency GLE",
-      "print_hide": 1,
-      "read_only": 1,
-      "search_index": 1
-    },
-    {
-      "description": "Configured via Reporting Currency Settings",
-      "fieldname": "reporting_currency",
-      "fieldtype": "Link",
-      "label": "Reporting Currency",
-      "options": "Currency"
-    },
-    {
-      "fieldname": "column_break_gucj",
-      "fieldtype": "Column Break"
-    },
-    {
-      "fieldname": "currency_exchange_detalls_section",
-      "fieldtype": "Section Break",
-      "label": "Currency Exchange Detalls"
-    },
-    {
-      "fieldname": "currency_exchange",
-      "fieldtype": "Link",
-      "label": "Currency Exchange",
-      "options": "Currency Exchange"
-    },
-    {
-      "fieldname": "column_break_vbfo",
-      "fieldtype": "Column Break"
-    },
-    {
-      "fieldname": "column_break_xsmd",
-      "fieldtype": "Column Break"
-    },
-    {
-      "fieldname": "date",
-      "fieldtype": "Date",
-      "label": "Date"
-    },
-    {
-      "description": "<ol>\n<li>Shows how many reporting\u2011currency units equal 1 unit of the company\u2019s currency for this entry.</li>\n<li>If we only had the reverse rate, we\u2019ve already flipped it so the number here can be read directly.</li>\n</ol>",
-      "fieldname": "exchange_rate",
-      "fieldtype": "Float",
-      "label": "Exchange Rate",
-      "length": 30,
-      "precision": "4"
-    },
-    {
-      "fieldname": "column_break_mgkf",
-      "fieldtype": "Column Break"
-    },
-    {
-      "default": "0",
-      "fieldname": "reporting_doe",
-      "fieldtype": "Check",
-      "in_standard_filter": 1,
-      "label": "Reporting DOE",
-      "read_only": 1
-    },
-    {
-      "fieldname": "column_break_qkdf",
-      "fieldtype": "Column Break"
-    },
-    {
-      "depends_on": "reporting_doe",
-      "fieldname": "reporting_doe_section",
-      "fieldtype": "Section Break",
-      "label": "Reporting DOE"
-    },
-    {
-      "fieldname": "total_debit_default_currency",
-      "fieldtype": "Currency",
-      "label": "Total Debit Amount LCY",
-      "length": 30,
-      "precision": "4"
-    },
-    {
-      "fieldname": "column_break_bzsc",
-      "fieldtype": "Column Break"
-    },
-    {
-      "fieldname": "total_credit_default_currency",
-      "fieldtype": "Currency",
-      "label": "Total Credit Amount LCY",
-      "length": 30,
-      "precision": "4"
-    },
-    {
-      "fieldname": "column_break_clqz",
-      "fieldtype": "Column Break"
-    },
-    {
-      "fieldname": "difference_default_currency",
-      "fieldtype": "Currency",
-      "label": "Total Difference LCY",
-      "length": 30,
-      "precision": "4"
-    },
-    {
-      "fieldname": "reporting_debit_total",
-      "fieldtype": "Currency",
-      "label": "Total Reporting Debit Amount",
-      "length": 30,
-      "precision": "4"
-    },
-    {
-      "fieldname": "reporting_credit_total",
-      "fieldtype": "Currency",
-      "label": "Total Reporting Credit Amount",
-      "length": 30,
-      "precision": "4"
-    },
-    {
-      "fieldname": "difference_reporting_currency",
-      "fieldtype": "Currency",
-      "label": "Total Reporting Amount Difference",
-      "length": 30,
-      "precision": "4"
-    },
-    {
-      "fieldname": "reporting_doe_difference",
-      "fieldtype": "Currency",
-      "label": "Reporting DOE Difference",
-      "length": 30,
-      "precision": "4"
-    },
-    {
-      "fieldname": "column_break_slwb",
-      "fieldtype": "Column Break"
-    },
-    {
-      "default": "0",
-      "fieldname": "manual_entry",
-      "fieldtype": "Check",
-      "in_standard_filter": 1,
-      "label": "Manual Entry",
-      "read_only": 1
-    }
-  ],
-  "grid_page_length": 50,
-  "icon": "fa fa-list",
-  "index_web_pages_for_search": 1,
-  "links": [],
-  "modified": "2025-12-10 10:53:54.894479",
-  "modified_by": "Administrator",
-  "module": "Reporting Currency",
-  "name": "Reporting Currency GLE",
-  "naming_rule": "Set by user",
-  "owner": "Administrator",
-  "permissions": [
-    {
-      "create": 1,
-      "delete": 1,
-      "email": 1,
-      "export": 1,
-      "print": 1,
-      "read": 1,
-      "report": 1,
-      "role": "System Manager",
-      "share": 1,
-      "write": 1
-    }
-  ],
-  "row_format": "Dynamic",
-  "rows_threshold_for_grid_search": 20,
-  "search_fields": "voucher_no,account,posting_date,against_voucher",
-  "sort_field": "creation",
-  "sort_order": "DESC",
-  "states": []
+ "actions": [],
+ "allow_import": 1,
+ "autoname": "null",
+ "creation": "2026-09-06 13:27:32.798011",
+ "doctype": "DocType",
+ "engine": "InnoDB",
+ "field_order": [
+  "reference_section",
+  "gl_entry",
+  "column_break_mqqt",
+  "gl_entry_hash",
+  "column_break_mgkf",
+  "gl_entry_modified",
+  "column_break_qkdf",
+  "reporting_doe",
+  "manual_entry",
+  "dates_section",
+  "posting_date",
+  "transaction_date",
+  "column_break_ikug",
+  "fiscal_year",
+  "due_date",
+  "account_details_section",
+  "account",
+  "account_currency",
+  "account_details",
+  "column_break_jwiw",
+  "against",
+  "party_type",
+  "party",
+  "transaction_details_section",
+  "voucher_type",
+  "voucher_no",
+  "voucher_subtype",
+  "transaction_currency",
+  "column_break_upjt",
+  "against_voucher_type",
+  "against_voucher",
+  "voucher_detail_no",
+  "transaction_exchange_rate",
+  "amounts_section",
+  "debit_amount_in_account_currency",
+  "debit",
+  "debit_amount_in_transaction_currency",
+  "column_break_bgzu",
+  "credit_amount_in_account_currency",
+  "credit",
+  "credit_in_transaction_currency",
+  "section_break_lifp",
+  "reporting_currency",
+  "column_break_gucj",
+  "reporting_debit",
+  "column_break_huri",
+  "reporting_credit",
+  "reporting_doe_section",
+  "total_debit_default_currency",
+  "reporting_debit_total",
+  "column_break_bzsc",
+  "total_credit_default_currency",
+  "reporting_credit_total",
+  "column_break_clqz",
+  "difference_default_currency",
+  "difference_reporting_currency",
+  "column_break_slwb",
+  "reporting_doe_difference",
+  "currency_exchange_detalls_section",
+  "currency_exchange",
+  "column_break_vbfo",
+  "date",
+  "column_break_xsmd",
+  "exchange_rate",
+  "dimensions_section",
+  "cost_center",
+  "column_break_mkfh",
+  "project",
+  "more_info_section",
+  "finance_book",
+  "company",
+  "is_opening",
+  "is_advance",
+  "column_break_jwux",
+  "to_rename",
+  "is_cancelled",
+  "remarks",
+  "amended_from"
+ ],
+ "fields": [
+  {
+   "fieldname": "dates_section",
+   "fieldtype": "Section Break",
+   "label": "Dates"
+  },
+  {
+   "fieldname": "posting_date",
+   "fieldtype": "Date",
+   "in_list_view": 1,
+   "label": "Posting Date",
+   "search_index": 1
+  },
+  {
+   "fieldname": "transaction_date",
+   "fieldtype": "Date",
+   "in_list_view": 1,
+   "label": "Transaction Date"
+  },
+  {
+   "fieldname": "column_break_ikug",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "fiscal_year",
+   "fieldtype": "Link",
+   "label": "Fiscal Year",
+   "options": "Fiscal Year"
+  },
+  {
+   "fieldname": "due_date",
+   "fieldtype": "Date",
+   "label": "Due Date"
+  },
+  {
+   "fieldname": "account_details_section",
+   "fieldtype": "Section Break",
+   "label": "Account Details"
+  },
+  {
+   "fieldname": "account",
+   "fieldtype": "Link",
+   "in_list_view": 1,
+   "label": "Account",
+   "options": "Account",
+   "search_index": 1
+  },
+  {
+   "fetch_from": "account.account_currency",
+   "fieldname": "account_currency",
+   "fieldtype": "Link",
+   "label": "Account Currency",
+   "options": "Currency"
+  },
+  {
+   "fieldname": "account_details",
+   "fieldtype": "Currency",
+   "label": "Account Details",
+   "length": 30,
+   "precision": "4"
+  },
+  {
+   "fieldname": "column_break_jwiw",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "against",
+   "fieldtype": "Text",
+   "label": "Against"
+  },
+  {
+   "fieldname": "party_type",
+   "fieldtype": "Link",
+   "in_standard_filter": 1,
+   "label": "Party Type",
+   "options": "DocType",
+   "search_index": 1
+  },
+  {
+   "fieldname": "party",
+   "fieldtype": "Dynamic Link",
+   "in_standard_filter": 1,
+   "label": "Party",
+   "options": "party_type",
+   "search_index": 1
+  },
+  {
+   "fieldname": "transaction_details_section",
+   "fieldtype": "Section Break",
+   "label": "Transaction Details"
+  },
+  {
+   "fieldname": "voucher_type",
+   "fieldtype": "Link",
+   "label": "Voucher Type",
+   "options": "DocType"
+  },
+  {
+   "fieldname": "voucher_no",
+   "fieldtype": "Dynamic Link",
+   "in_standard_filter": 1,
+   "label": "Voucher No",
+   "options": "voucher_type",
+   "search_index": 1
+  },
+  {
+   "fieldname": "voucher_subtype",
+   "fieldtype": "Small Text",
+   "label": "Voucher Subtype"
+  },
+  {
+   "fieldname": "transaction_currency",
+   "fieldtype": "Link",
+   "label": "Transaction Currency",
+   "options": "Currency"
+  },
+  {
+   "fieldname": "column_break_upjt",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "against_voucher_type",
+   "fieldtype": "Link",
+   "in_standard_filter": 1,
+   "label": "Against Voucher Type",
+   "options": "DocType"
+  },
+  {
+   "fieldname": "against_voucher",
+   "fieldtype": "Dynamic Link",
+   "label": "Against Voucher",
+   "options": "against_voucher_type",
+   "search_index": 1
+  },
+  {
+   "fieldname": "voucher_detail_no",
+   "fieldtype": "Data",
+   "label": "Voucher Detail No",
+   "search_index": 1
+  },
+  {
+   "fieldname": "transaction_exchange_rate",
+   "fieldtype": "Float",
+   "label": "Transaction Exchange Rate",
+   "length": 30,
+   "precision": "4"
+  },
+  {
+   "fieldname": "amounts_section",
+   "fieldtype": "Section Break",
+   "label": "Amounts"
+  },
+  {
+   "fieldname": "debit_amount_in_account_currency",
+   "fieldtype": "Currency",
+   "label": "Debit Amount in Account Currency",
+   "length": 30,
+   "options": "account_currency",
+   "precision": "4"
+  },
+  {
+   "fieldname": "debit",
+   "fieldtype": "Currency",
+   "label": "Debit Amount",
+   "length": 30,
+   "options": "Company:company:default_currency",
+   "precision": "4"
+  },
+  {
+   "fieldname": "debit_amount_in_transaction_currency",
+   "fieldtype": "Currency",
+   "label": "Debit Amount in Transaction Currency",
+   "length": 30,
+   "options": "transaction_currency",
+   "precision": "4"
+  },
+  {
+   "fieldname": "column_break_bgzu",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "credit_amount_in_account_currency",
+   "fieldtype": "Currency",
+   "label": "Credit Amount in Account Currency",
+   "length": 30,
+   "options": "account_currency",
+   "precision": "4"
+  },
+  {
+   "fieldname": "credit",
+   "fieldtype": "Currency",
+   "label": "Credit Amount",
+   "length": 30,
+   "options": "Company:company:default_currency",
+   "precision": "4"
+  },
+  {
+   "fieldname": "credit_in_transaction_currency",
+   "fieldtype": "Currency",
+   "label": "Credit in Transaction Currency",
+   "length": 30,
+   "options": "transaction_currency",
+   "precision": "4"
+  },
+  {
+   "fieldname": "dimensions_section",
+   "fieldtype": "Section Break",
+   "label": "Dimensions"
+  },
+  {
+   "fieldname": "cost_center",
+   "fieldtype": "Link",
+   "in_list_view": 1,
+   "label": "Cost Center",
+   "options": "Cost Center"
+  },
+  {
+   "fieldname": "column_break_mkfh",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "project",
+   "fieldtype": "Link",
+   "label": "Project",
+   "options": "Project"
+  },
+  {
+   "fieldname": "more_info_section",
+   "fieldtype": "Section Break",
+   "label": "More Info"
+  },
+  {
+   "fieldname": "finance_book",
+   "fieldtype": "Link",
+   "label": "Finance Book",
+   "options": "Finance Book"
+  },
+  {
+   "fieldname": "company",
+   "fieldtype": "Link",
+   "label": "Company",
+   "options": "Company",
+   "search_index": 1
+  },
+  {
+   "fieldname": "is_opening",
+   "fieldtype": "Select",
+   "in_filter": 1,
+   "label": "Is Opening",
+   "options": "No\nYes"
+  },
+  {
+   "fieldname": "is_advance",
+   "fieldtype": "Select",
+   "label": "Is Advance",
+   "options": "No\nYes"
+  },
+  {
+   "fieldname": "column_break_jwux",
+   "fieldtype": "Column Break"
+  },
+  {
+   "default": "0",
+   "fieldname": "to_rename",
+   "fieldtype": "Check",
+   "label": "To Rename",
+   "search_index": 1
+  },
+  {
+   "default": "0",
+   "fieldname": "is_cancelled",
+   "fieldtype": "Check",
+   "label": "Is Cancelled"
+  },
+  {
+   "fieldname": "remarks",
+   "fieldtype": "Text",
+   "in_standard_filter": 1,
+   "label": "Remarks",
+   "no_copy": 1
+  },
+  {
+   "fieldname": "reference_section",
+   "fieldtype": "Section Break",
+   "label": "Reference"
+  },
+  {
+   "fieldname": "gl_entry",
+   "fieldtype": "Link",
+   "label": "GL Entry",
+   "options": "GL Entry",
+   "read_only": 1,
+   "unique": 1
+  },
+  {
+   "fieldname": "gl_entry_hash",
+   "fieldtype": "Data",
+   "label": "GL Entry Hash",
+   "length": 16,
+   "no_copy": 1,
+   "read_only": 1,
+   "search_index": 1
+  },
+  {
+   "fieldname": "gl_entry_modified",
+   "fieldtype": "Datetime",
+   "hidden": 1,
+   "label": "GL Entry Modified",
+   "no_copy": 1,
+   "read_only": 1
+  },
+  {
+   "fieldname": "column_break_mqqt",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "section_break_lifp",
+   "fieldtype": "Section Break",
+   "label": "Reporting Currency"
+  },
+  {
+   "fieldname": "reporting_debit",
+   "fieldtype": "Currency",
+   "label": "Reporting Debit",
+   "length": 30,
+   "options": "reporting_currency",
+   "precision": "4"
+  },
+  {
+   "fieldname": "column_break_huri",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "reporting_credit",
+   "fieldtype": "Currency",
+   "label": "Reporting Credit",
+   "length": 30,
+   "options": "reporting_currency",
+   "precision": "4"
+  },
+  {
+   "fieldname": "amended_from",
+   "fieldtype": "Link",
+   "label": "Amended From",
+   "no_copy": 1,
+   "options": "Reporting Currency GLE",
+   "print_hide": 1,
+   "read_only": 1,
+   "search_index": 1
+  },
+  {
+   "description": "Configured via Reporting Currency Settings",
+   "fieldname": "reporting_currency",
+   "fieldtype": "Link",
+   "label": "Reporting Currency",
+   "options": "Currency",
+   "read_only": 1
+  },
+  {
+   "fieldname": "column_break_gucj",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "currency_exchange_detalls_section",
+   "fieldtype": "Section Break",
+   "label": "Currency Exchange Detalls"
+  },
+  {
+   "fieldname": "currency_exchange",
+   "fieldtype": "Link",
+   "label": "Currency Exchange",
+   "options": "Currency Exchange"
+  },
+  {
+   "fieldname": "column_break_vbfo",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "column_break_xsmd",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "date",
+   "fieldtype": "Date",
+   "label": "Date"
+  },
+  {
+   "description": "<ol>\n<li>Shows how many reporting\u2011currency units equal 1 unit of the company\u2019s currency for this entry.</li>\n<li>If we only had the reverse rate, we\u2019ve already flipped it so the number here can be read directly.</li>\n</ol>",
+   "fieldname": "exchange_rate",
+   "fieldtype": "Float",
+   "label": "Exchange Rate",
+   "length": 30,
+   "precision": "4"
+  },
+  {
+   "fieldname": "column_break_mgkf",
+   "fieldtype": "Column Break"
+  },
+  {
+   "default": "0",
+   "fieldname": "reporting_doe",
+   "fieldtype": "Check",
+   "in_standard_filter": 1,
+   "label": "Reporting DOE",
+   "read_only": 1
+  },
+  {
+   "fieldname": "column_break_qkdf",
+   "fieldtype": "Column Break"
+  },
+  {
+   "depends_on": "reporting_doe",
+   "fieldname": "reporting_doe_section",
+   "fieldtype": "Section Break",
+   "label": "Reporting DOE"
+  },
+  {
+   "fieldname": "total_debit_default_currency",
+   "fieldtype": "Currency",
+   "label": "Total Debit Amount LCY",
+   "length": 30,
+   "precision": "4"
+  },
+  {
+   "fieldname": "column_break_bzsc",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "total_credit_default_currency",
+   "fieldtype": "Currency",
+   "label": "Total Credit Amount LCY",
+   "length": 30,
+   "precision": "4"
+  },
+  {
+   "fieldname": "column_break_clqz",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "difference_default_currency",
+   "fieldtype": "Currency",
+   "label": "Total Difference LCY",
+   "length": 30,
+   "precision": "4"
+  },
+  {
+   "fieldname": "reporting_debit_total",
+   "fieldtype": "Currency",
+   "label": "Total Reporting Debit Amount",
+   "length": 30,
+   "precision": "4"
+  },
+  {
+   "fieldname": "reporting_credit_total",
+   "fieldtype": "Currency",
+   "label": "Total Reporting Credit Amount",
+   "length": 30,
+   "precision": "4"
+  },
+  {
+   "fieldname": "difference_reporting_currency",
+   "fieldtype": "Currency",
+   "label": "Total Reporting Amount Difference",
+   "length": 30,
+   "precision": "4"
+  },
+  {
+   "fieldname": "reporting_doe_difference",
+   "fieldtype": "Currency",
+   "label": "Reporting DOE Difference",
+   "length": 30,
+   "precision": "4"
+  },
+  {
+   "fieldname": "column_break_slwb",
+   "fieldtype": "Column Break"
+  },
+  {
+   "default": "0",
+   "fieldname": "manual_entry",
+   "fieldtype": "Check",
+   "in_standard_filter": 1,
+   "label": "Manual Entry",
+   "read_only": 1
+  }
+ ],
+ "grid_page_length": 50,
+ "icon": "fa fa-list",
+ "index_web_pages_for_search": 1,
+ "links": [],
+ "modified": "2026-09-06 13:49:26.484707",
+ "modified_by": "Administrator",
+ "module": "Reporting Currency",
+ "name": "Reporting Currency GLE",
+ "naming_rule": "Set by user",
+ "owner": "Administrator",
+ "permissions": [
+  {
+   "create": 1,
+   "delete": 1,
+   "email": 1,
+   "export": 1,
+   "print": 1,
+   "read": 1,
+   "report": 1,
+   "role": "System Manager",
+   "share": 1,
+   "write": 1
+  },
+  {
+   "export": 1,
+   "print": 1,
+   "read": 1,
+   "report": 1,
+   "role": "Accounts User"
+  },
+  {
+   "export": 1,
+   "print": 1,
+   "read": 1,
+   "report": 1,
+   "role": "Accounts Manager"
+  },
+  {
+   "export": 1,
+   "print": 1,
+   "read": 1,
+   "report": 1,
+   "role": "Auditor"
+  }
+ ],
+ "row_format": "Dynamic",
+ "rows_threshold_for_grid_search": 20,
+ "search_fields": "voucher_no,account,posting_date,against_voucher",
+ "sort_field": "creation",
+ "sort_order": "DESC",
+ "states": []
 }

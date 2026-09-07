@@ -1,7 +1,8 @@
 // Shared currency formatter helpers for custom query reports.
 
 (function initCurrencyFormatter(root) {
-  const HELPER_VERSION = "2026.02.12";
+  const HELPER_VERSION = "2026.09.01";
+  const NUMERIC_FIELD_TYPES = new Set(["Currency", "Float", "Int", "Percent"]);
   const loadedAt = new Date().toISOString();
   const fallbackWarningKeys = new Set();
 
@@ -44,14 +45,53 @@
 
     const styleSuffix = extraStyle ? String(extraStyle) : "";
     // eslint-disable-next-line max-len
-    return `<div style="display:flex;justify-content:space-between;width:100%;gap:0.25rem;${styleSuffix}"><span>${parts.symbol}</span><span>${parts.number}</span></div>`;
+    return `<div style="display:flex;justify-content:space-between;width:100%;gap:20px;${styleSuffix}"><span>${parts.symbol}</span><span>${parts.number}</span></div>`;
   }
 
   function alignCurrencyCell({ value, column, formatted, extraStyle = "" }) {
-    if (!column || column.fieldtype !== "Currency") return formatted;
-    if (value == null || value === "" || !formatted) return formatted;
+    if (!column || column.fieldtype !== "Currency") {
+      return formatted;
+    }
+    if (value == null || value === "") {
+      return "";
+    }
+    if (!formatted) {
+      return formatted;
+    }
     return formatCurrencyHtml(formatted, extraStyle);
   }
+
+  function tintNegativeValue(value, column, formatted) {
+    const numericValue = Number(value);
+    if (
+      !NUMERIC_FIELD_TYPES.has(column?.fieldtype) ||
+      !Number.isFinite(numericValue) ||
+      numericValue >= 0
+    ) {
+      return formatted;
+    }
+    // Values displayed as zero should remain neutral even if raw precision is negative.
+    if (!/[1-9]/.test(extractText(formatted))) {
+      return formatted;
+    }
+    return `<div class="karam-negative-value">${formatted}</div>`;
+  }
+
+  function installNegativeValueStyle() {
+    if (
+      typeof document === "undefined" ||
+      document.getElementById("karam-negative-values")
+    ) {
+      return;
+    }
+    const style = document.createElement("style");
+    style.id = "karam-negative-values";
+    style.textContent =
+      ".dt-cell:has(.karam-negative-value) { background-color: var(--red-100, #fff0f0); }";
+    document.head.appendChild(style);
+  }
+
+  installNegativeValueStyle();
 
   function warnFallbackUsage(reportName, columnField = "") {
     const key = `${reportName || "unknown"}:${columnField || ""}`;
@@ -68,11 +108,12 @@
 
   const api = {
     alignCurrencyCell,
+    tintNegativeValue,
     formatCurrencyHtml,
     splitSymbolAndNumber,
     warnFallbackUsage,
     __version__: HELPER_VERSION,
-    __loaded_at__: loadedAt,
+    __loaded_at__: loadedAt
   };
 
   const globalScope = root;
@@ -88,18 +129,13 @@
     formatted,
     extraStyle = ""
   ) {
-    if (
-      !column ||
-      column.fieldtype !== "Currency" ||
-      value == null ||
-      value === "" ||
-      !formatted
-    ) {
+    if (!column || !formatted) {
       return formatted;
     }
 
     if (api) {
-      return api.alignCurrencyCell({ value, column, formatted, extraStyle });
+      const aligned = api.alignCurrencyCell({ value, column, formatted, extraStyle });
+      return api.tintNegativeValue(value, column, aligned);
     }
 
     if (!missingHelperReports.has(reportName)) {

@@ -12,8 +12,8 @@ if TYPE_CHECKING:
     from types import ModuleType
 
 MODULE_NAME = (
-    "karam_finance.karam_general.report.profit_and_loss_statement_by_cost_center."
-    "profit_and_loss_statement_by_cost_center"
+    "karam_finance.karam_general.report.profit_and_loss_statement_by_cost_center_(karam)."
+    "profit_and_loss_statement_by_cost_center_(karam)"
 )
 
 

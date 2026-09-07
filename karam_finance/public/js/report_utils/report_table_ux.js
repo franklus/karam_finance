@@ -16,7 +16,8 @@
   const MAXIMUM_COLUMN_WIDTH = 640,
     HEADER_PADDING = 48,
     DATATABLE_CONTENT_INSET = 20,
-    CELL_PADDING = 12;
+    CELL_PADDING = 12,
+    CURRENCY_SYMBOL_GAP = 20;
   const SERIAL_PADDING = 28,
     MINIMUM_SERIAL_WIDTH = 30,
     TREE_INDENT_WIDTH = 20,
@@ -84,6 +85,25 @@
       : 0;
   }
 
+  function createDisplayValueFormatter(column) {
+    const formatter = globalThis.frappe?.form?.formatters?.Currency;
+    if (column.fieldtype !== "Currency" || !formatter) {
+      return (value) => value;
+    }
+    const formattedValues = new Map();
+    return (value, row) => {
+      if (value === null || value === undefined || value === "") {
+        return "";
+      }
+      const currency = globalThis.frappe.meta.get_field_currency(column, row);
+      const key = JSON.stringify([currency, value]);
+      if (!formattedValues.has(key)) {
+        formattedValues.set(key, formatter(value, column, { only_value: true }, row));
+      }
+      return formattedValues.get(key);
+    };
+  }
+
   function calculateColumnWidths(columns, rows, options = {}) {
     const maximum = options.maximumColumnWidth ?? MAXIMUM_COLUMN_WIDTH;
     const measureText = options.measureText || estimateTextWidth;
@@ -92,17 +112,21 @@
     return (columns || []).map((column, columnIndex) => {
       const config = COLUMN_WIDTHS[column.fieldtype] || COLUMN_WIDTHS.default;
       const fieldname = getColumnFieldname(column);
+      const displayValue = createDisplayValueFormatter(column);
       const measure = (value) =>
         getCachedTextWidth(value, config.characterWidth, measureText, cache);
       const contentPadding =
-        DATATABLE_CONTENT_INSET + CELL_PADDING + getTreeIndentWidth(columnIndex, rows);
+        DATATABLE_CONTENT_INSET +
+        CELL_PADDING +
+        (column.fieldtype === "Currency" ? CURRENCY_SYMBOL_GAP : 0) +
+        getTreeIndentWidth(columnIndex, rows);
       const textLimit = Math.max(0, maximum - contentPadding);
       let longestValueWidth = 0;
 
       for (const row of rows || []) {
         longestValueWidth = Math.max(
           longestValueWidth,
-          measure(row?.[column.id || fieldname])
+          measure(displayValue(row?.[column.id || fieldname], row))
         );
         if (longestValueWidth >= textLimit) {
           longestValueWidth = textLimit;
@@ -206,13 +230,21 @@
     if (!column) return datatable;
 
     const width = calculateSerialNumberWidth(rowCount);
+    const style = datatable.style;
+    if (style) {
+      // Tree expansion and filtering call setDimensions again after rendering.
+      style.getRowIndexColumnWidth = () => width;
+    }
     if (column.width !== width) setSerialNumberColumnWidth(datatable, column, width);
     return datatable;
   }
 
   function applyCurrentReportColumnWidths(options, config = {}) {
-    const rows = globalThis.frappe?.query_report?.data || options?.data || [];
-    const visibleRows = filterReportRows(rows, config);
+    const report = globalThis.frappe?.query_report;
+    const rows = report?.data || options?.data || [];
+    const visibleRows = report?._karamReportTableUXPreRendering
+      ? rows
+      : filterReportRows(rows, config);
     const visibleOptions =
       config.excludedRowFlags?.length || config.excludedTrailingRows
         ? { ...options, data: visibleRows, showTotalRow: false }
@@ -222,6 +254,65 @@
       visibleRows,
       config.widthOptions || {}
     );
+  }
+
+  function installPreRenderColumnWidths(report, config = {}) {
+    const target = report;
+    if (!target) {
+      return target;
+    }
+    target._karamReportTableUXConfigs ||= new Map();
+    target._karamReportTableUXConfigs.set(target.report_name, config);
+    if (target._karamReportTableUXPreRenderInstalled) {
+      return target;
+    }
+
+    const originalRenderDatatable = target.render_datatable;
+    if (typeof originalRenderDatatable !== "function") {
+      return target;
+    }
+
+    target.render_datatable = function renderKaramReportDatatable(...args) {
+      const activeConfig = this._karamReportTableUXConfigs.get(this.report_name);
+      if (!activeConfig) {
+        return originalRenderDatatable.apply(this, args);
+      }
+      const sourceRows = this.data;
+      const sourceColumns = this.columns;
+      if (!Array.isArray(sourceRows) || !Array.isArray(sourceColumns)) {
+        return originalRenderDatatable.apply(this, args);
+      }
+
+      const visibleRows = filterReportRows(sourceRows, activeConfig);
+      const hadPreRenderingFlag = Object.hasOwn(
+        this,
+        "_karamReportTableUXPreRendering"
+      );
+      const previousPreRenderingFlag = this._karamReportTableUXPreRendering;
+      this.data = visibleRows;
+      this.columns = calculateColumnWidths(
+        sourceColumns,
+        visibleRows,
+        activeConfig.widthOptions || {}
+      );
+      this._karamReportTableUXPreRendering = true;
+      try {
+        const result = originalRenderDatatable.apply(this, args);
+        // DataTable creates its native serial column only during rendering.
+        applySerialNumberColumnWidth(this.datatable, visibleRows.length);
+        return result;
+      } finally {
+        this.data = sourceRows;
+        this.columns = sourceColumns;
+        if (hadPreRenderingFlag) {
+          this._karamReportTableUXPreRendering = previousPreRenderingFlag;
+        } else {
+          delete this._karamReportTableUXPreRendering;
+        }
+      }
+    };
+    target._karamReportTableUXPreRenderInstalled = true;
+    return target;
   }
 
   function refreshDatatable(datatable, rows, columns, sourceRows) {
@@ -270,6 +361,7 @@
     calculateColumnWidths,
     calculateSerialNumberWidth,
     getVisibleColumns,
+    installPreRenderColumnWidths,
     applySerialNumberColumnWidth,
     applyRenderedColumnWidths,
     refreshCurrentReportColumnWidths,

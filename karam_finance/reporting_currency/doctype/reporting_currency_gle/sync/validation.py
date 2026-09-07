@@ -39,6 +39,21 @@ def validate_settings() -> dict[str, Any]:
 
     Returns settings dict with reporting_currency and sync settings.
     """
+    ledger = frappe.qb.DocType("GL Entry")
+    companies = (
+        frappe.qb.from_(ledger)
+        .select(ledger.company)
+        .where(ledger.docstatus == 1)
+        .distinct()
+        .limit(2)
+        .run(pluck=True)
+    )
+    if len(companies) > 1:
+        frappe.throw(
+            _(
+                "Reporting Currency sync currently supports one company per site. Configure company-specific generation before synchronising multiple companies."
+            )
+        )
     settings = frappe.get_single(DOCTYPE_RC_SETTINGS)
 
     if not settings.reporting_currency:
@@ -191,3 +206,19 @@ def validate_currency_exchange_coverage(
         "direct": bool(direct_exists),
         "inverse": bool(inverse_exists),
     }
+
+
+def get_reporting_company() -> str | None:
+    """Refuse ambiguous company selection in site-wide DOE settings."""
+    ledger = frappe.qb.DocType("Reporting Currency GLE")
+    companies = (
+        frappe.qb.from_(ledger)
+        .select(ledger.company)
+        .where(ledger.reporting_doe == 0)
+        .distinct()
+        .limit(2)
+        .run(pluck=True)
+    )
+    if len(companies) > 1:
+        frappe.throw(_("Reporting DOE currently supports one company per site."))
+    return companies[0] if companies else None

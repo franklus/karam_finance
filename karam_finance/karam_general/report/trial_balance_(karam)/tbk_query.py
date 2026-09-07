@@ -24,9 +24,9 @@ def get_period_balances(
     filters: Any,
     ignore_is_opening: Any = 0,
     *,
-    finance_books=None,
-    accounting_dimensions=None,
-) -> dict[str, dict]:
+    finance_books: Any = None,
+    accounting_dimensions: Any = None,
+) -> dict[str, dict[str, Any]]:
     """Aggregate the requested period in one bounded query per currency group.
 
     Rows remain grouped by ``account_currency`` until after presentation
@@ -76,8 +76,8 @@ def get_period_balances(
     return _group_currency_rows(rows)
 
 
-def _group_currency_rows(rows) -> dict[str, dict]:
-    grouped: dict[str, dict] = {}
+def _group_currency_rows(rows: Any) -> dict[str, dict[str, Any]]:
+    grouped: dict[str, dict[str, Any]] = {}
     for row in rows:
         account = row.account
         account_data = grouped.setdefault(
@@ -89,7 +89,9 @@ def _group_currency_rows(rows) -> dict[str, dict]:
             },
         )
         currency = row.get("account_currency") or ""
-        if currency:
+        if currency and any(
+            flt(row.get(field)) != 0 for field in ACCOUNT_CURRENCY_FIELDS
+        ):
             account_data["account_currencies"].add(currency)
 
         for field in COMPANY_FIELDS + ACCOUNT_CURRENCY_FIELDS:
@@ -98,7 +100,7 @@ def _group_currency_rows(rows) -> dict[str, dict]:
     return grouped
 
 
-def get_gl_data_optimised(filters) -> dict[str, dict]:
+def get_gl_data_optimised(filters: Any) -> dict[str, dict[str, Any]]:
     """Compatibility alias for the former unused optimisation entry point."""
 
     ignore_is_opening = frappe.db.get_single_value(

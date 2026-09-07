@@ -2,6 +2,9 @@
 // For license information, please see license.txt
 
 frappe.query_reports["Bank Reconciliation Statement (Karam)"] = {
+  onload(report) {
+    window.karamReportTableUX?.installPreRenderColumnWidths(report);
+  },
   filters: [
     {
       fieldname: "company",
@@ -51,9 +54,6 @@ frappe.query_reports["Bank Reconciliation Statement (Karam)"] = {
     return (
       window.karamReportTableUX?.applyCurrentReportColumnWidths(options) || options
     );
-  },
-  after_datatable_render() {
-    window.karamReportTableUX?.refreshCurrentReportColumnWidths(frappe.query_report);
   },
   formatter(value, row, column, _data, default_formatter) {
     if (
