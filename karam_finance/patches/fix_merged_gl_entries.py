@@ -12,7 +12,15 @@ if reference_detail_no is empty.  This patch:
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING, Any, cast
+
 import frappe
+
+if TYPE_CHECKING:
+    from erpnext.accounts.doctype.gl_entry.gl_entry import GLEntry
+
+type _GLRow = dict[str, Any]
+type _MergeKey = tuple[str, str, str, str, str]
 
 
 def execute() -> None:
@@ -111,7 +119,7 @@ def _split_merged_gl_entries() -> int:
         return 0
 
     # Group by (voucher_no, account, party_type, party, cost_center)
-    groups: dict[tuple, list[dict]] = {}
+    groups: dict[_MergeKey, list[_GLRow]] = {}
     for row in merged_gl:
         key = (
             row["voucher_no"],
@@ -122,81 +130,7 @@ def _split_merged_gl_entries() -> int:
         )
         groups.setdefault(key, []).append(row)
 
-    split_count = 0
-    for (
-        voucher_no,
-        account,
-        party_type,
-        party,
-        cost_center,
-    ), gl_rows in groups.items():
-        # Fetch the JE Account rows that should replace this merged GL entry
-        jea_rows = frappe.db.sql(
-            """
-            SELECT name, debit_in_account_currency, credit_in_account_currency,
-                   debit, credit, letter, exchange_rate, project,
-                   reference_type, reference_name,
-                   against_account, is_advance,
-                   reference_detail_no
-            FROM `tabJournal Entry Account`
-            WHERE parent = %(voucher_no)s
-              AND account = %(account)s
-              AND IFNULL(party_type, '') = %(party_type)s
-              AND IFNULL(party, '') = %(party)s
-              AND IFNULL(cost_center, '') = %(cost_center)s
-            ORDER BY idx
-            """,
-            {
-                "voucher_no": voucher_no,
-                "account": account,
-                "party_type": party_type,
-                "party": party,
-                "cost_center": cost_center,
-            },
-            as_dict=True,
-        )
-
-        if len(jea_rows) <= 1:
-            # Single row — just backfill voucher_detail_no directly
-            if jea_rows:
-                for gl_row in gl_rows:
-                    frappe.db.set_value(  # nosemgrep: frappe-direct-db-set-value
-                        "GL Entry",
-                        gl_row["name"],
-                        {
-                            "voucher_detail_no": jea_rows[0]["name"],
-                            "letter": jea_rows[0].get("letter") or "",
-                        },
-                        update_modified=False,
-                    )
-            continue
-
-        # Idempotency: if split entries already exist (from a prior partial
-        # run), skip creation and just delete the stale originals.
-        jea_names = [r["name"] for r in jea_rows]
-        already_split = frappe.get_all(
-            "GL Entry",
-            filters={
-                "voucher_no": voucher_no,
-                "voucher_detail_no": ["in", jea_names],
-                "is_cancelled": 0,
-            },
-            fields=["name"],
-            limit=1,
-        )
-        if already_split:
-            for gl_row in gl_rows:
-                frappe.db.delete("GL Entry", {"name": gl_row["name"]})
-            split_count += len(gl_rows)
-            continue
-
-        # Multiple JEA rows → split from the first GL entry only,
-        # delete the rest (they are redundant merged copies).
-        _split_single_gl_entry(gl_rows[0], jea_rows)
-        split_count += 1
-        for gl_row in gl_rows[1:]:
-            frappe.db.delete("GL Entry", {"name": gl_row["name"]})
-            split_count += 1
+    split_count = sum(_process_merge_group(key, rows) for key, rows in groups.items())
 
     if split_count:
         frappe.db.commit()
@@ -204,9 +138,87 @@ def _split_merged_gl_entries() -> int:
     return split_count
 
 
+def _matching_jea_rows(key: _MergeKey) -> list[_GLRow]:
+    voucher_no, account, party_type, party, cost_center = key
+    return frappe.db.sql(
+        """
+        SELECT name, debit_in_account_currency, credit_in_account_currency,
+               debit, credit, letter, exchange_rate, project,
+               reference_type, reference_name,
+               against_account, is_advance,
+               reference_detail_no
+        FROM `tabJournal Entry Account`
+        WHERE parent = %(voucher_no)s
+          AND account = %(account)s
+          AND IFNULL(party_type, '') = %(party_type)s
+          AND IFNULL(party, '') = %(party)s
+          AND IFNULL(cost_center, '') = %(cost_center)s
+        ORDER BY idx
+        """,
+        {
+            "voucher_no": voucher_no,
+            "account": account,
+            "party_type": party_type,
+            "party": party,
+            "cost_center": cost_center,
+        },
+        as_dict=True,
+    )
+
+
+def _process_merge_group(key: _MergeKey, gl_rows: list[_GLRow]) -> int:
+    jea_rows = _matching_jea_rows(key)
+    if len(jea_rows) <= 1:
+        _backfill_single_group(gl_rows, jea_rows)
+        return 0
+
+    # Idempotency: if split entries already exist (from a prior partial
+    # run), skip creation and just delete the stale originals.
+    jea_names = [r["name"] for r in jea_rows]
+    already_split = frappe.get_all(
+        "GL Entry",
+        filters={
+            "voucher_no": key[0],
+            "voucher_detail_no": ["in", jea_names],
+            "is_cancelled": 0,
+        },
+        fields=["name"],
+        limit=1,
+    )
+    if already_split:
+        _delete_merged_rows(gl_rows)
+        return len(gl_rows)
+
+    # Multiple JEA rows → split from the first GL entry only,
+    # delete the rest (they are redundant merged copies).
+    _split_single_gl_entry(gl_rows[0], jea_rows)
+    _delete_merged_rows(gl_rows[1:])
+    return len(gl_rows)
+
+
+def _backfill_single_group(gl_rows: list[_GLRow], jea_rows: list[_GLRow]) -> None:
+    if not jea_rows:
+        return
+    for gl_row in gl_rows:
+        frappe.db.set_value(  # nosemgrep: frappe-direct-db-set-value
+            "GL Entry",
+            gl_row["name"],
+            {
+                "voucher_detail_no": jea_rows[0]["name"],
+                "letter": jea_rows[0].get("letter") or "",
+            },
+            update_modified=False,
+        )
+
+
+def _delete_merged_rows(rows: list[_GLRow]) -> None:
+    for row in rows:
+        frappe.db.delete("GL Entry", {"name": row["name"]})
+
+
 def _split_single_gl_entry(
-    gl_row: dict,
-    jea_rows: list[dict],
+    gl_row: _GLRow,
+    jea_rows: list[_GLRow],
 ) -> None:
     """Replace one merged GL entry with individual entries per JEA row.
 
@@ -228,64 +240,72 @@ def _split_single_gl_entry(
 
     try:
         for jea in jea_rows:
-            new_gle = frappe.new_doc("GL Entry")
-            for field in original:
-                skip = (
-                    "name",
-                    "creation",
-                    "modified",
-                    "modified_by",
-                    "owner",
-                    "idx",
-                    "to_rename",
-                )
-                if field in skip:
-                    continue
-                if hasattr(new_gle, field):
-                    new_gle.set(field, original[field])
-
-            new_gle.debit = jea.get("debit") or 0
-            new_gle.credit = jea.get("credit") or 0
-            new_gle.debit_in_account_currency = (
-                jea.get("debit_in_account_currency") or 0
-            )
-            new_gle.credit_in_account_currency = (
-                jea.get("credit_in_account_currency") or 0
-            )
-            new_gle.voucher_detail_no = jea["name"]
-            new_gle.letter = jea.get("letter") or ""
-            new_gle.against_voucher = (
-                jea.get("reference_name") or original.get("against_voucher") or ""
-            )
-            new_gle.against_voucher_type = (
-                jea.get("reference_type") or original.get("against_voucher_type") or ""
-            )
-            new_gle.is_advance = jea.get("is_advance") or "No"
-
-            orig_total = abs(original.get("debit") or 0) + abs(
-                original.get("credit") or 0
-            )
-            if orig_total and original.get("transaction_currency"):
-                row_total = abs(jea.get("debit") or 0) + abs(jea.get("credit") or 0)
-                ratio = row_total / orig_total if orig_total else 0
-                new_gle.debit_in_transaction_currency = (
-                    original.get("debit_in_transaction_currency") or 0
-                ) * ratio
-                new_gle.credit_in_transaction_currency = (
-                    original.get("credit_in_transaction_currency") or 0
-                ) * ratio
-
-            new_gle.flags.notify_update = False
-            new_gle.flags.ignore_validate = True
-            new_gle.insert(ignore_permissions=True)
+            _insert_split_entry(original, jea)
 
         frappe.db.delete("GL Entry", {"name": gl_name})
-    except Exception:
+    except Exception:  # noqa: BLE001 - rollback all split rows and retain the original on failure.
         frappe.db.rollback(save_point=savepoint)
         frappe.log_error(
             frappe.get_traceback(),
             f"GL split failed for {gl_name}",
         )
+
+
+def _insert_split_entry(original: _GLRow, jea: _GLRow) -> None:
+    new_gle = cast("GLEntry", frappe.new_doc("GL Entry"))
+    _copy_original_fields(new_gle, original)
+
+    new_gle.debit = jea.get("debit") or 0
+    new_gle.credit = jea.get("credit") or 0
+    new_gle.debit_in_account_currency = jea.get("debit_in_account_currency") or 0
+    new_gle.credit_in_account_currency = jea.get("credit_in_account_currency") or 0
+    new_gle.voucher_detail_no = jea["name"]
+    new_gle.set("letter", jea.get("letter") or "")
+    new_gle.against_voucher = (
+        jea.get("reference_name") or original.get("against_voucher") or ""
+    )
+    new_gle.against_voucher_type = (
+        jea.get("reference_type") or original.get("against_voucher_type") or ""
+    )
+    new_gle.is_advance = jea.get("is_advance") or "No"  # noqa: V101 - ERPNext consumes this GL field or document flag during insertion.
+
+    _distribute_transaction_amounts(new_gle, original, jea)
+
+    new_gle.flags.notify_update = False  # noqa: V101 - ERPNext consumes this GL field or document flag during insertion.
+    new_gle.flags.ignore_validate = True  # noqa: V101 - ERPNext consumes this GL field or document flag during insertion.
+    new_gle.insert(ignore_permissions=True)
+
+
+def _copy_original_fields(new_gle: GLEntry, original: _GLRow) -> None:
+    for field in original:
+        skip = (
+            "name",
+            "creation",
+            "modified",
+            "modified_by",
+            "owner",
+            "idx",
+            "to_rename",
+        )
+        if field in skip:
+            continue
+        if hasattr(new_gle, field):
+            new_gle.set(field, original[field])
+
+
+def _distribute_transaction_amounts(
+    new_gle: GLEntry, original: _GLRow, jea: _GLRow
+) -> None:
+    orig_total = abs(original.get("debit") or 0) + abs(original.get("credit") or 0)
+    if orig_total and original.get("transaction_currency"):
+        row_total = abs(jea.get("debit") or 0) + abs(jea.get("credit") or 0)
+        ratio = row_total / orig_total
+        new_gle.debit_in_transaction_currency = (
+            original.get("debit_in_transaction_currency") or 0
+        ) * ratio
+        new_gle.credit_in_transaction_currency = (
+            original.get("credit_in_transaction_currency") or 0
+        ) * ratio
 
 
 def _fix_unrenamed_gl_entries() -> None:
@@ -312,14 +332,14 @@ def _fix_unrenamed_gl_entries() -> None:
     rename_temporarily_named_docs("GL Entry")
 
     # Reconcile RC GLE records whose gl_entry links broke during renaming
-    from karam_finance.reporting_currency.doctype.reporting_currency_gle.sync.reconcile_gl_entry_links import (  # noqa: PLC0415, E501
+    from karam_finance.reporting_currency.doctype.reporting_currency_gle.sync.reconcile_gl_entry_links import (  # noqa: PLC0415
         reconcile_gl_entry_links,
     )
 
     reconcile_gl_entry_links(commit=False)
 
 
-def diagnose_gl_split_issues() -> dict:
+def diagnose_gl_split_issues() -> dict[str, dict[str, int | list[str]]]:  # noqa: V103 - retained bench diagnostic entry point.
     """Detect duplicate or orphaned GL entries from a prior split migration.
 
     Returns a dict with three categories:
@@ -373,7 +393,7 @@ def diagnose_gl_split_issues() -> dict:
     }
 
 
-def repair_duplicate_gl_entries() -> dict:
+def repair_duplicate_gl_entries() -> dict[str, int]:  # noqa: V103 - retained explicit repair entry point; never auto-invoked.
     """Delete duplicate GL entries created by a prior buggy split migration.
 
     For each (voucher_no, account, voucher_detail_no) group with count > 1,

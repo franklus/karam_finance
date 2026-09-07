@@ -3,13 +3,13 @@
 from __future__ import annotations
 
 import json
+import math
 from collections.abc import Iterable, Mapping, Sequence
 from datetime import date, datetime
 from decimal import Decimal
 from typing import Any, cast
 
 import frappe
-from erpnext.accounts.utils import get_currency_precision
 from frappe import _
 from frappe.exceptions import ValidationError
 from frappe.model.document import Document
@@ -22,7 +22,7 @@ LetterRow = dict[str, object]
 PARTY_LOOKUP_BATCH_SIZE = 1000
 
 
-class LetterReconciliation(Document):
+class LetterReconciliation(Document):  # noqa: V102 - Frappe loads the DocType controller by name.
     """Single DocType controller for Letter Reconciliation."""
 
 
@@ -64,7 +64,7 @@ def _coerce_items(
     if isinstance(value, str):
         try:
             parsed = cast("object", json.loads(value))
-        except Exception:
+        except json.JSONDecodeError:
             frappe.throw(_("Invalid data received; please reload and try again."))
 
     if isinstance(parsed, (list, tuple)):
@@ -72,9 +72,6 @@ def _coerce_items(
         for item in parsed:
             if isinstance(item, Mapping):
                 items.append(dict(item))
-                continue
-            if isinstance(item, dict):
-                items.append(cast("LetterRow", item))
                 continue
             frappe.throw(_("Invalid data received; please reload and try again."))
         return items
@@ -109,7 +106,7 @@ def _prepare_letter_items(
     validate_sum_of_credit_and_debit(cr_items, dt_items, account=account_for_precision)
 
     all_items = cr_items + dt_items
-    letters = {((i.get("letter") or "").strip()) for i in all_items}
+    letters = {_letter_text(i.get("letter")) for i in all_items}
 
     if require_letter is False:
         if letters - {""}:
@@ -134,7 +131,17 @@ def _prepare_letter_items(
     return cr_items, dt_items, all_items, None
 
 
-@frappe.whitelist()  # nosemgrep: frappe-missing-permission-check
+def _letter_text(value: object) -> str:
+    """Narrow external letter values before applying string operations."""
+    if not value:
+        return ""
+    if isinstance(value, str):
+        return value.strip()
+    frappe.throw(_("Invalid data received; please reload and try again."))
+    return ""
+
+
+@frappe.whitelist()  # nosemgrep: frappe-missing-permission-check  # noqa: V103 - Desk calls this whitelisted endpoint by dotted path.
 def get_adjacent_account(
     current_account: str = "",
     direction: str = "next",
@@ -151,21 +158,11 @@ def get_adjacent_account(
     if company:
         filters["company"] = company
 
-    if current_account:
-        current_number = frappe.db.get_value(
-            "Account", current_account, "account_number"
-        )
-        if not current_number:
-            return None
-
-        if direction == "next":
-            filters["account_number"] = [">", current_number]
-            order = "account_number asc"
-        else:
-            filters["account_number"] = ["<", current_number]
-            order = "account_number desc"
-    else:
-        order = "account_number asc"
+    number_filter, order = _adjacent_account_position(current_account, direction)
+    if not order:
+        return None
+    if number_filter:
+        filters["account_number"] = number_filter
 
     result = frappe.get_all(
         "Account",
@@ -177,15 +174,29 @@ def get_adjacent_account(
     return result[0]["name"] if result else None
 
 
-@frappe.whitelist()  # nosemgrep: frappe-missing-permission-check
-def journal_entry_list(
+def _adjacent_account_position(
+    current_account: str, direction: str
+) -> tuple[list[str] | None, str]:
+    if not current_account:
+        return None, "account_number asc"
+    number = frappe.db.get_value("Account", current_account, "account_number")
+    if not number:
+        return None, ""
+    if direction == "next":
+        return [">", number], "account_number asc"
+    return ["<", number], "account_number desc"
+
+
+@frappe.whitelist()  # nosemgrep: frappe-missing-permission-check  # noqa: V103 - Desk calls this whitelisted endpoint by dotted path.
+# Public whitelisted API retains its positional argument contract.
+def journal_entry_list(  # noqa: PLR0913, PLR0917
     account: str,
     start_date: str = "",
     end_date: str = "",
     party_type: str = "",
     party: str = "",
     show_letter: str = "",
-) -> dict[str, list[dict[str, Any]]]:
+) -> dict[str, list[dict[str, Any]] | str]:
     """Return credit/debit rows from Journal Entry Accounts for a given account.
 
     Filters by posting date range when provided.
@@ -195,59 +206,17 @@ def journal_entry_list(
     Permission: Controlled by Letter Reconciliation doctype role permissions.
     """
     try:
-        # Optional safety: ensure account is eligible for lettering
-        account_info = frappe.db.get_value(
-            "Account",
-            account,
-            ["name", "enable_lettering"],
-            as_dict=True,
+        query = _journal_entry_query(account)
+        query = _filter_journal_entries(
+            query,
+            {
+                "start_date": start_date,
+                "end_date": end_date,
+                "party_type": party_type,
+                "party": party,
+                "show_letter": show_letter,
+            },
         )
-        if not account_info:
-            frappe.throw(_("Selected account does not exist."))
-        if not account_info.get("enable_lettering"):
-            frappe.throw(_("Selected account is not enabled for lettering."))
-
-        accounts = frappe.qb.DocType("Journal Entry Account")
-        journal_entry = frappe.qb.DocType("Journal Entry")
-
-        query = (
-            frappe.qb.from_(accounts)
-            .join(journal_entry)
-            .on(journal_entry.name == accounts.parent)
-            .select(
-                accounts.docstatus,
-                accounts.debit_in_account_currency,
-                accounts.name.as_("jv_row_name"),
-                accounts.letter,
-                accounts.account,
-                accounts.party_type,
-                accounts.party,
-                accounts.credit_in_account_currency,
-                accounts.parent.as_("journal_entry"),
-                journal_entry.posting_date,
-                accounts.user_remark,
-            )
-            .where(
-                (journal_entry.docstatus == 1)
-                & (journal_entry.voucher_type == "Journal Entry")
-                & (accounts.account == account)
-            )
-            .orderby(journal_entry.posting_date)
-        )
-
-        if start_date:
-            query = query.where(journal_entry.posting_date >= start_date)
-        if end_date:
-            query = query.where(journal_entry.posting_date <= end_date)
-        if party_type:
-            query = query.where(accounts.party_type == party_type)
-        if party:
-            query = query.where(accounts.party == party)
-        if show_letter == "Only unassigned rows":
-            query = query.where((accounts.letter.isnull()) | (accounts.letter == ""))
-        elif show_letter == "Only assigned rows":
-            query = query.where(accounts.letter.isnotnull() & (accounts.letter != ""))
-
         entries = query.run(as_dict=True)
         _attach_party_names(entries)
 
@@ -257,9 +226,69 @@ def journal_entry_list(
             ],
             "dr": [e for e in entries if (e.get("debit_in_account_currency") or 0) > 0],
         }
-    except Exception:
+    except Exception:  # noqa: BLE001 - API returns its established error response.
         frappe.log_error(frappe.get_traceback(), _("Journal Entry List Error"))
         return {"error": _("Unable to fetch journal entries. See error log.")}
+
+
+def _journal_entry_query(account: str) -> Any:
+    # Optional safety: ensure account is eligible for lettering
+    account_info = frappe.db.get_value(
+        "Account",
+        account,
+        ["name", "enable_lettering"],
+        as_dict=True,
+    )
+    if not account_info:
+        frappe.throw(_("Selected account does not exist."))
+    if not account_info.get("enable_lettering"):
+        frappe.throw(_("Selected account is not enabled for lettering."))
+
+    accounts = frappe.qb.DocType("Journal Entry Account")
+    journal_entry = frappe.qb.DocType("Journal Entry")
+
+    return (
+        frappe.qb.from_(accounts)
+        .join(journal_entry)
+        .on(journal_entry.name == accounts.parent)
+        .select(
+            accounts.docstatus,
+            accounts.debit_in_account_currency,
+            accounts.name.as_("jv_row_name"),
+            accounts.letter,
+            accounts.account,
+            accounts.party_type,
+            accounts.party,
+            accounts.credit_in_account_currency,
+            accounts.parent.as_("journal_entry"),
+            journal_entry.posting_date,
+            accounts.user_remark,
+        )
+        .where(
+            (journal_entry.docstatus == 1)
+            & (journal_entry.voucher_type == "Journal Entry")
+            & (accounts.account == account)
+        )
+        .orderby(journal_entry.posting_date)
+    )
+
+
+def _filter_journal_entries(query: Any, filters: dict[str, str]) -> Any:
+    accounts = frappe.qb.DocType("Journal Entry Account")
+    journal_entry = frappe.qb.DocType("Journal Entry")
+    if filters["start_date"]:
+        query = query.where(journal_entry.posting_date >= filters["start_date"])
+    if filters["end_date"]:
+        query = query.where(journal_entry.posting_date <= filters["end_date"])
+    for field in ("party_type", "party"):
+        if filters[field]:
+            query = query.where(accounts[field] == filters[field])
+    letter_filter = filters["show_letter"]
+    if letter_filter == "Only unassigned rows":
+        query = query.where(accounts.letter.isnull() | (accounts.letter == ""))
+    elif letter_filter == "Only assigned rows":
+        query = query.where(accounts.letter.isnotnull() & (accounts.letter != ""))
+    return query
 
 
 def _attach_party_names(entries: list[dict[str, Any]]) -> None:
@@ -272,6 +301,23 @@ def _attach_party_names(entries: list[dict[str, Any]]) -> None:
         "Employee": "employee_name",
         "Shareholder": "title",
     }
+    targets = _party_targets(entries)
+
+    party_map = {
+        party_type: _party_names(party_type, fieldname, targets.get(party_type, set()))
+        for party_type, fieldname in party_fields.items()
+        if targets.get(party_type)
+    }
+    for entry in entries:
+        party_type = entry.get("party_type")
+        party = entry.get("party")
+        if party_type and party:
+            entry["party_name"] = party_map.get(party_type, {}).get(party, "")
+        else:
+            entry["party_name"] = ""
+
+
+def _party_targets(entries: list[dict[str, Any]]) -> dict[str, set[str]]:
     targets: dict[str, set[str]] = {}
     for entry in entries:
         party_type = entry.get("party_type")
@@ -279,35 +325,22 @@ def _attach_party_names(entries: list[dict[str, Any]]) -> None:
         if party_type and party:
             targets.setdefault(party_type, set()).add(party)
 
-    party_map: dict[str, dict[str, str]] = {}
-    for party_type, fieldname in party_fields.items():
-        names = targets.get(party_type)
-        if not names:
-            continue
+    return targets
 
-        records = []
-        for chunk in _chunked(list(names), PARTY_LOOKUP_BATCH_SIZE):
-            rows = frappe.get_all(
-                party_type,
-                filters={"name": ["in", chunk]},
-                fields=["name", fieldname],
-                limit=0,
-            )
-            records.extend(rows)
 
-        if records:
-            party_map[party_type] = {
-                row["name"]: row.get(fieldname) or ""
-                for row in records
-                if row.get("name")
-            }
-
-    for entry in entries:
-        party_type = entry.get("party_type")
-        party = entry.get("party")
-        entry["party_name"] = (
-            party_map.get(party_type, {}).get(party, "") if party_type and party else ""
+def _party_names(party_type: str, fieldname: str, names: set[str]) -> dict[str, str]:
+    records = []
+    for chunk in _chunked(list(names), PARTY_LOOKUP_BATCH_SIZE):
+        # One query per 1,000 distinct names; bounded bulk lookup, not per entry.
+        # nosemgrep: frappe-n-plus-one-read-in-loop
+        rows = frappe.get_all(
+            party_type,
+            filters={"name": ["in", chunk]},
+            fields=["name", fieldname],
+            limit=0,
         )
+        records.extend(rows)
+    return {row["name"]: row.get(fieldname) or "" for row in records if row.get("name")}
 
 
 def _chunked(values: list[str], size: int) -> Iterable[list[str]]:
@@ -351,12 +384,12 @@ def validate_sum_of_credit_and_debit(
             message = _(
                 "Total credits ({0}) must equal total debits ({1}). "
                 "Please ensure the selected entries are balanced."
-            ).format(flt(cr_sum, precision), flt(dt_sum, precision))
+            ).format(flt(str(cr_sum), precision), flt(str(dt_sum), precision))
             frappe.throw(message)
     except ValidationError:
         # Let specific validation bubble up unwrapped
         raise
-    except Exception:
+    except Exception:  # noqa: BLE001 - validation boundary logs and translates invalid totals.
         frappe.log_error(frappe.get_traceback(), _("Validation Error"))
         frappe.throw(_("Could not validate debit and credit totals."))
 
@@ -387,13 +420,7 @@ def set_letter(
         )
         del _common  # unused
 
-        accounts_in_selection = {
-            (i.get("account") or "").strip() for i in all_items if i.get("account")
-        }
-        if account:
-            accounts_in_selection.add(account)
-        accounts_in_selection = {acc for acc in accounts_in_selection if acc}
-        _validate_lettering_enabled_for_accounts(accounts_in_selection)
+        _validate_lettering_enabled_for_accounts(_selected_accounts(all_items, account))
 
         # Compute latest year from posting_date across all selected items
         latest_year_val = _compute_latest_year(all_items)
@@ -401,18 +428,7 @@ def set_letter(
         # Retrieve current letter for the computed year
         current_letter = _get_letter_for_year_locked(latest_year_val)
 
-        # Update Journal Entry Account rows
-        jv_row_names: list[str] = [
-            rn for i in all_items if (rn := i.get("jv_row_name"))
-        ]
-        if jv_row_names:
-            frappe.db.bulk_update(
-                "Journal Entry Account",
-                {rn: {"letter": current_letter} for rn in jv_row_names},
-            )
-
-        # Update GL Entries matching the selected JE Account rows
-        _update_gl_letters(jv_row_names, current_letter)
+        _write_selected_letters(all_items, current_letter)
 
         # Advance letter for that year
         next_letter = increment_string(current_letter)
@@ -431,7 +447,7 @@ def set_letter(
         return {"last_letter": current_letter, "next_letter": next_letter}
 
 
-@frappe.whitelist()  # nosemgrep: frappe-missing-permission-check
+@frappe.whitelist()  # nosemgrep: frappe-missing-permission-check  # noqa: V103 - Desk calls this whitelisted endpoint by dotted path.
 def remove_letter(
     cr_items: str | list[dict[str, Any]],
     dt_items: str | list[dict[str, Any]],
@@ -454,24 +470,8 @@ def remove_letter(
         )
         del _common  # unused
 
-        accounts_in_selection = {
-            (i.get("account") or "").strip() for i in all_items if i.get("account")
-        }
-        accounts_in_selection = {acc for acc in accounts_in_selection if acc}
-        _validate_lettering_enabled_for_accounts(accounts_in_selection)
-
-        # Clear letters on Journal Entry Account
-        jv_row_names: list[str] = [
-            rn for i in all_items if (rn := i.get("jv_row_name"))
-        ]
-        if jv_row_names:
-            frappe.db.bulk_update(
-                "Journal Entry Account",
-                {rn: {"letter": ""} for rn in jv_row_names},
-            )
-
-        # Clear letters on GL Entries matching the selected JE Account rows
-        _update_gl_letters(jv_row_names, "")
+        _validate_lettering_enabled_for_accounts(_selected_accounts(all_items))
+        _write_selected_letters(all_items, "")
     except ValidationError:
         frappe.db.rollback(save_point=savepoint)
         # Bubble up expected validation errors without wrapping
@@ -484,6 +484,26 @@ def remove_letter(
         raise AssertionError(msg) from exc
     else:
         return {"success": True}
+
+
+def _selected_accounts(
+    items: list[dict[str, Any]], account: str | None = None
+) -> set[str]:
+    accounts = {
+        (item.get("account") or "").strip() for item in items if item.get("account")
+    }
+    if account:
+        accounts.add(account)
+    return {name for name in accounts if name}
+
+
+def _write_selected_letters(items: list[dict[str, Any]], letter: str) -> None:
+    row_names = [name for item in items if (name := item.get("jv_row_name"))]
+    if row_names:
+        frappe.db.bulk_update(
+            "Journal Entry Account", {name: {"letter": letter} for name in row_names}
+        )
+    _update_gl_letters(row_names, letter)
 
 
 def _update_gl_letters(jv_row_names: list[str], letter: str) -> None:
@@ -506,35 +526,34 @@ def _compute_latest_year(items: list[dict[str, Any]]) -> int:
 
     Falls back to the current year if absent.
     """
-    years: list[int] = []
-    for i in items:
-        pd = i.get("posting_date")
-        if not pd:
-            continue
-        if isinstance(pd, str):
-            # Frappe typically stores posting_date as YYYY-MM-DD
-            parts = pd.split("-")
-            if parts and parts[0].isdigit():
-                years.append(int(parts[0]))
-        elif isinstance(pd, (date, datetime)):
-            years.append(pd.year)
-    if years:
-        return max(years)
-    # Fallback
-    return int(frappe.utils.now_datetime().year)
+    years = [
+        year
+        for item in items
+        if (year := _posting_year(item.get("posting_date"))) is not None
+    ]
+    return max(years) if years else frappe.utils.now_datetime().year
 
 
-def get_next_letter(year: int) -> str:
+def _posting_year(value: object) -> int | None:
+    if isinstance(value, str):
+        year = value.split("-", 1)[0]
+        return int(year) if year.isdigit() else None
+    if isinstance(value, (date, datetime)):
+        return value.year
+    return None
+
+
+def get_next_letter(year: int) -> str:  # noqa: V103 - retained public lettering utility.
     """Return the current letter for a year, defaulting to 'A'."""
     if not year:
         year = frappe.utils.now_datetime().year
-    val = frappe.db.get_value("Letter Settings", str(int(year)), "letter")
+    val = frappe.db.get_value("Letter Settings", str(year), "letter")
     return val or "A"
 
 
 def update_year_letter(year: int, letter: str) -> None:
     """Create or update the Letter Settings record for the year."""
-    docname = str(int(year))
+    docname = str(year)
     if frappe.db.exists("Letter Settings", docname):
         # Intentional: Simple letter value update, no validation hooks needed
         frappe.db.set_value(  # nosemgrep: frappe-direct-db-set-value
@@ -552,7 +571,7 @@ def update_year_letter(year: int, letter: str) -> None:
 
 def _get_letter_for_year_locked(year: int) -> str:
     """Return the current letter for a year, acquiring a row lock to prevent races."""
-    year_int = int(year) if year else frappe.utils.now_datetime().year
+    year_int = year or frappe.utils.now_datetime().year
     docname = str(year_int)
 
     row = frappe.db.sql(
@@ -608,23 +627,28 @@ def increment_string(s: str = "") -> str:
 
 def _resolve_amount_precision(account: str | None) -> int:
     """Return the currency precision for the given account or a sensible default."""
-    precision: int | None = None
-
-    if account:
-        currency = frappe.db.get_value("Account", account, "account_currency")
-        if currency:
-            try:
-                precision = get_currency_precision(currency)
-            except Exception:
-                precision = None
+    precision = _account_currency_precision(account)
 
     if precision is None:
         precision = frappe.get_precision("Journal Entry Account", "debit")
 
-    if precision is None:
+    if precision in (None, ""):
         precision = frappe.db.get_default("currency_precision")
 
-    return int(cint(precision or 2))
+    return max(0, cint(precision)) if precision not in (None, "") else 2
+
+
+def _account_currency_precision(account: str | None) -> int | None:
+    if not account:
+        return None
+    currency = frappe.db.get_value("Account", account, "account_currency")
+    if not currency:
+        return None
+    fraction_units = frappe.db.get_value("Currency", currency, "fraction_units")
+    if fraction_units in (None, ""):
+        return None
+    units = cint(fraction_units)
+    return math.ceil(math.log10(units)) if units > 1 else 0
 
 
 def _extract_account_from_items(

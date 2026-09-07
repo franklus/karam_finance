@@ -2,12 +2,18 @@
 
 from __future__ import annotations
 
-from typing import TypedDict
+from typing import TYPE_CHECKING, TypedDict, cast
 
 import frappe
 from frappe import _
 from frappe.model.document import Document
 from frappe.utils import now_datetime
+
+if TYPE_CHECKING:
+    from frappe.types import DF
+    from frappe.utils.redis_wrapper import (  # noqa: V104 - quoted cast type.
+        RedisWrapper,
+    )
 
 from .historical_gl_rebuild import (
     ClassifiedVoucher,
@@ -23,8 +29,20 @@ from .historical_gl_rebuild import (
 )
 
 
-class LetterReconciliationSettings(Document):
+class LetterReconciliationSettings(Document):  # noqa: V102 - Frappe DocType controller.
     """Single DocType controlling GL merge prevention behaviour."""
+
+    if TYPE_CHECKING:
+        prevent_gl_merge: DF.Check  # noqa: V107 - stored DocType field loaded by Frappe and displayed in Desk.
+        rebuild_company: DF.Link | None
+        rebuild_whole_history: DF.Check
+        rebuild_from_posting_date: DF.Date | None
+        rebuild_to_posting_date: DF.Date | None
+        last_preview_run: DF.Datetime | None  # noqa: V107 - stored DocType field loaded by Frappe and displayed in Desk.
+        last_preview_user: DF.Link | None  # noqa: V107 - stored DocType field loaded by Frappe and displayed in Desk.
+        last_migration_run: DF.Datetime | None  # noqa: V107 - stored DocType field loaded by Frappe and displayed in Desk.
+        last_migration_status: DF.Data | None  # noqa: V107 - stored DocType field loaded by Frappe and displayed in Desk.
+        last_migration_user: DF.Link | None  # noqa: V107 - stored DocType field loaded by Frappe and displayed in Desk.
 
 
 _REBUILD_CACHE_KEY = "historical_gl_rebuild_running"
@@ -51,7 +69,7 @@ class PublicRebuildPreview(TypedDict):
     """Subset preview payload returned to the settings UI."""
 
     filters: RebuildFilters
-    total_submitted_vouchers: int
+    total_submitted_vouchers: int  # noqa: V107 - serialised payload key, consumed through dictionary lookups.
     eligible: PublicPreviewBucket
     blocked: PublicPreviewBucket
     already_correct: PublicPreviewBucket
@@ -79,12 +97,12 @@ class RebuildRunState(TypedDict):
     progress_event: str
     done_event: str
     filters: RebuildFilters
-    total_submitted_vouchers: int
+    total_submitted_vouchers: int  # noqa: V107 - serialised payload key, consumed through dictionary lookups.
     eligible_vouchers: list[str]
-    next_index: int
-    rebuilt_count: int
-    blocked_count: int
-    already_correct_count: int
+    next_index: int  # noqa: V107 - serialised payload key, consumed through dictionary lookups.
+    rebuilt_count: int  # noqa: V107 - serialised payload key, consumed through dictionary lookups.
+    blocked_count: int  # noqa: V107 - serialised payload key, consumed through dictionary lookups.
+    already_correct_count: int  # noqa: V107 - serialised payload key, consumed through dictionary lookups.
     failures: list[RebuildFailure]
 
 
@@ -104,7 +122,7 @@ def enqueue_historical_gl_rebuild() -> EnqueueRebuildResponse:
     """Queue the subset-based repost rebuild and return realtime event names."""
     frappe.only_for(["System Manager", "Accounts Manager"])
 
-    if frappe.cache.get_value(_REBUILD_CACHE_KEY):
+    if cast("RedisWrapper", frappe.cache).get_value(_REBUILD_CACHE_KEY):
         frappe.throw(_running_rebuild_message())
 
     filters = get_validated_rebuild_filters()
@@ -124,16 +142,18 @@ def enqueue_historical_gl_rebuild() -> EnqueueRebuildResponse:
         "progress_event": progress_event,
         "done_event": done_event,
         "filters": filters,
-        "total_submitted_vouchers": int(preview["total_submitted_vouchers"]),
+        "total_submitted_vouchers": preview["total_submitted_vouchers"],
         "eligible_vouchers": eligible_vouchers,
         "next_index": 0,
         "rebuilt_count": 0,
-        "blocked_count": int(preview["blocked"]["count"]),
-        "already_correct_count": int(preview["already_correct"]["count"]),
+        "blocked_count": preview["blocked"]["count"],
+        "already_correct_count": preview["already_correct"]["count"],
         "failures": [],
     }
 
-    frappe.cache.set_value(_REBUILD_CACHE_KEY, run_id, expires_in_sec=_CACHE_TTL)
+    cast("RedisWrapper", frappe.cache).set_value(
+        _REBUILD_CACHE_KEY, run_id, expires_in_sec=_CACHE_TTL
+    )
     _save_rebuild_state(state)
 
     try:
@@ -168,63 +188,69 @@ def run_historical_gl_rebuild_job(run_id: str) -> None:
         for absolute_index, voucher_no in enumerate(
             batch_vouchers, start=start_index + 1
         ):
-            percent = int(((absolute_index - 1) / total) * 100)
-            _publish_progress(
-                state["progress_event"],
-                state["user"],
-                percent,
-                _("Rebuilding {0} ({1} of {2}, batch {3} of {4})…").format(
-                    voucher_no,
-                    absolute_index,
-                    total,
-                    _get_batch_number(absolute_index),
-                    _get_total_batches(total),
-                ),
-            )
-
-            savepoint = f"historical_gl_rebuild_{absolute_index}"
-            frappe.db.savepoint(savepoint)
-
-            try:
-                rebuild_single_voucher(
-                    voucher_no,
-                    reference_detail_backfilled=True,
-                )
-            except Exception as exc:
-                frappe.db.rollback(save_point=savepoint)
-                frappe.log_error(
-                    frappe.get_traceback(),
-                    f"Historical GL rebuild failed for {voucher_no}",
-                )
-                state["failures"].append(
-                    {
-                        "voucher_no": voucher_no,
-                        "reason": str(exc),
-                    }
-                )
-            else:
-                state["rebuilt_count"] += 1
-                _commit_rebuild_progress()
-
-            state["next_index"] = absolute_index
-            _save_rebuild_state(state)
+            _rebuild_voucher_at_index(state, voucher_no, absolute_index)
 
         if state["next_index"] < total:
             _publish_progress(
                 state["progress_event"],
                 state["user"],
                 int((state["next_index"] / total) * 100),
-                _("Queued the next rebuild batch…"),
+                message=_("Queued the next rebuild batch…"),
             )
             _enqueue_rebuild_batch(run_id)
             return
 
         _finalise_rebuild_run(state)
-    except Exception:
+    except Exception:  # noqa: BLE001 - worker boundary rolls back and reports fatal failure.
         frappe.db.rollback()
         frappe.log_error(frappe.get_traceback(), "Historical GL rebuild failed")
         _publish_rebuild_failure(state)
         _clear_rebuild_state(run_id)
+
+
+def _rebuild_voucher_at_index(
+    state: RebuildRunState, voucher_no: str, absolute_index: int
+) -> None:
+    percent = int(((absolute_index - 1) / len(state["eligible_vouchers"])) * 100)
+    _publish_progress(
+        state["progress_event"],
+        state["user"],
+        percent,
+        message=_("Rebuilding {0} ({1} of {2}, batch {3} of {4})…").format(
+            voucher_no,
+            absolute_index,
+            len(state["eligible_vouchers"]),
+            _get_batch_number(absolute_index),
+            _get_total_batches(len(state["eligible_vouchers"])),
+        ),
+    )
+
+    savepoint = f"historical_gl_rebuild_{absolute_index}"
+    frappe.db.savepoint(savepoint)
+
+    try:
+        rebuild_single_voucher(
+            voucher_no,
+            reference_detail_backfilled=True,
+        )
+    except Exception as exc:  # noqa: BLE001 - isolate a failed voucher and continue the batch.
+        frappe.db.rollback(save_point=savepoint)
+        frappe.log_error(
+            frappe.get_traceback(),
+            f"Historical GL rebuild failed for {voucher_no}",
+        )
+        state["failures"].append(
+            {
+                "voucher_no": voucher_no,
+                "reason": str(exc),
+            }
+        )
+    else:
+        state["rebuilt_count"] += 1
+        _commit_rebuild_progress()
+
+    state["next_index"] = absolute_index
+    _save_rebuild_state(state)
 
 
 @frappe.whitelist()
@@ -251,7 +277,7 @@ def run_gl_split_diagnostic() -> None:
     )
 
 
-def _publish_progress(event: str, user: str, current: int, message: str) -> None:
+def _publish_progress(event: str, user: str, current: int, *, message: str) -> None:
     frappe.publish_realtime(
         event,
         {"current": current, "total": 100, "message": message},
@@ -260,17 +286,23 @@ def _publish_progress(event: str, user: str, current: int, message: str) -> None
 
 
 def _update_preview_audit(user: str) -> None:
-    settings = frappe.get_single("Letter Reconciliation Settings")
-    settings.last_preview_run = now_datetime()
-    settings.last_preview_user = user
+    settings = cast(
+        "LetterReconciliationSettings",
+        frappe.get_single("Letter Reconciliation Settings"),
+    )
+    settings.last_preview_run = now_datetime()  # noqa: V101 - persisted audit field displayed by the settings form.
+    settings.last_preview_user = user  # noqa: V101 - persisted audit field displayed by the settings form.
     settings.save(ignore_permissions=True)
 
 
 def _update_rebuild_audit(user: str, status: str) -> None:
-    settings = frappe.get_single("Letter Reconciliation Settings")
-    settings.last_migration_run = now_datetime()
-    settings.last_migration_status = status
-    settings.last_migration_user = user
+    settings = cast(
+        "LetterReconciliationSettings",
+        frappe.get_single("Letter Reconciliation Settings"),
+    )
+    settings.last_migration_run = now_datetime()  # noqa: V101 - persisted audit field displayed by the settings form.
+    settings.last_migration_status = status  # noqa: V101 - persisted audit field displayed by the settings form.
+    settings.last_migration_user = user  # noqa: V101 - persisted audit field displayed by the settings form.
     settings.save(ignore_permissions=True)
     _commit_rebuild_progress()
 
@@ -313,12 +345,12 @@ def _enqueue_rebuild_batch(run_id: str) -> None:
 
 
 def _get_rebuild_state(run_id: str) -> RebuildRunState | None:
-    state = frappe.cache.get_value(_get_rebuild_state_key(run_id))
+    state = cast("RedisWrapper", frappe.cache).get_value(_get_rebuild_state_key(run_id))
     return state or None
 
 
 def _save_rebuild_state(state: RebuildRunState) -> None:
-    frappe.cache.set_value(
+    cast("RedisWrapper", frappe.cache).set_value(
         _get_rebuild_state_key(state["run_id"]),
         state,
         expires_in_sec=_CACHE_TTL,
@@ -326,15 +358,15 @@ def _save_rebuild_state(state: RebuildRunState) -> None:
 
 
 def _clear_rebuild_state(run_id: str) -> None:
-    frappe.cache.delete_value(_REBUILD_CACHE_KEY)
-    frappe.cache.delete_value(_get_rebuild_state_key(run_id))
+    cast("RedisWrapper", frappe.cache).delete_value(_REBUILD_CACHE_KEY)
+    cast("RedisWrapper", frappe.cache).delete_value(_get_rebuild_state_key(run_id))
 
 
 def _clear_orphaned_rebuild_lock(run_id: str) -> None:
-    locked_run_id = frappe.cache.get_value(_REBUILD_CACHE_KEY)
+    locked_run_id = cast("RedisWrapper", frappe.cache).get_value(_REBUILD_CACHE_KEY)
     if locked_run_id == run_id:
-        frappe.cache.delete_value(_REBUILD_CACHE_KEY)
-    frappe.cache.delete_value(_get_rebuild_state_key(run_id))
+        cast("RedisWrapper", frappe.cache).delete_value(_REBUILD_CACHE_KEY)
+    cast("RedisWrapper", frappe.cache).delete_value(_get_rebuild_state_key(run_id))
 
 
 def _get_rebuild_state_key(run_id: str) -> str:
@@ -357,7 +389,9 @@ def _finalise_rebuild_run(state: RebuildRunState) -> None:
     status = _STATUS_PARTIAL_SUCCESS if failures else _STATUS_SUCCESS
     failure_groups = _build_failure_groups(failures)
 
-    _publish_progress(state["progress_event"], state["user"], 100, _("Complete"))
+    _publish_progress(
+        state["progress_event"], state["user"], 100, message=_("Complete")
+    )
     _update_rebuild_audit(state["user"], _audit_status_label(status))
 
     frappe.publish_realtime(
@@ -379,7 +413,7 @@ def _publish_rebuild_failure(state: RebuildRunState) -> None:
     """Publish a fatal rebuild failure for the current run state."""
     try:
         _update_rebuild_audit(state["user"], _("Failed"))
-    except Exception:
+    except Exception:  # noqa: BLE001 - failure reporting must not obscure the original job failure.
         frappe.log_error(
             frappe.get_traceback(),
             "Historical GL rebuild audit update failed",

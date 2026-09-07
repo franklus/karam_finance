@@ -36,6 +36,10 @@ doctype_js["Bank Clearance"] = "public/js/overrides/bank_clearance.js"
 doctype_js["Stock Settings"] = (
     "public/js/karam_general/stock_settings_item_price_mismatch.js"
 )
+doctype_js["Letter Reconciliation"] = "public/js/letter_reconciliation/selection.js"
+doctype_js["Letter Reconciliation Settings"] = (
+    "public/js/letter_reconciliation/rebuild_messages.js"
+)
 doctype_list_js = {  # noqa: V107 - Frappe list-view asset loader.
     "Reporting Currency GLE": (
         "public/js/reporting_currency/reporting_currency_gle_list.js"

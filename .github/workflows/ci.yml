@@ -127,6 +127,9 @@ jobs:
           ../apps/karam_finance/karam_finance/karam_general/tests/test_trial_balance_report.py
           ../apps/karam_finance/karam_finance/karam_series/tests/test_hooks.py
           ../apps/karam_finance/karam_finance/karam_series/tests/test_doctype_list_sync.py
+          ../apps/karam_finance/karam_finance/letter_reconciliation/doctype/letter_reconciliation/test_letter_row_links.py
+          ../apps/karam_finance/karam_finance/letter_reconciliation/doctype/letter_reconciliation/test_reconciliation_contracts.py
+          ../apps/karam_finance/karam_finance/letter_reconciliation/doctype/letter_reconciliation_settings/test_rebuild_contracts.py
 
       - name: Enforce separate line and branch coverage thresholds
         if: ${{ !cancelled() && steps.dependencies.outcome == 'success' }}

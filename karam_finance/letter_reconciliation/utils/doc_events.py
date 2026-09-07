@@ -35,7 +35,7 @@ def _is_merge_prevention_enabled() -> bool:
                 "Letter Reconciliation Settings", "prevent_gl_merge"
             )
         )
-    except Exception:
+    except Exception:  # noqa: BLE001 - preserve disabled behaviour when optional settings are unavailable.
         return False
 
 
@@ -62,8 +62,7 @@ def gl_entry_before_insert(doc: _GLInsertDoc, _method: object = None) -> None:
     """Copy letter from Journal Entry Account line onto GL Entry at creation.
 
     Uses voucher_detail_no (= JE Account row name) for exact row-level lookup.
-    Falls back to account-level matching for legacy entries without
-    voucher_detail_no.
+    Legacy entries without voucher_detail_no remain unchanged.
     """
     if not _is_merge_prevention_enabled():
         return
@@ -73,39 +72,40 @@ def gl_entry_before_insert(doc: _GLInsertDoc, _method: object = None) -> None:
         return
 
     try:
-        cache: dict[str, dict[str, str]] | None = getattr(
-            frappe.local, _LETTER_CACHE_KEY, None
-        )
-        if cache is None:
-            cache = {}
-            setattr(frappe.local, _LETTER_CACHE_KEY, cache)
-
-        letter_map: dict[str, str] | None = cache.get(doc.voucher_no)
-        if letter_map is None:
-            rows: list[_JournalEntryAccountRowDict] = frappe.get_all(
-                "Journal Entry Account",
-                filters={"parent": doc.voucher_no},
-                fields=["name", "account", "letter", "idx"],
-                order_by="idx asc",
-                limit=0,
-            )
-            letter_map = {}
-            for row in rows:
-                row_name = row.get("name")
-                if row_name:
-                    letter_map[row_name] = row.get("letter") or ""
-
-            cache[doc.voucher_no] = letter_map
+        letter_map = _cached_voucher_letters(doc.voucher_no)
 
         # Match by voucher_detail_no (JE Account row name)
         detail_no = getattr(doc, "voucher_detail_no", None) or ""
         if detail_no and detail_no in letter_map:
             doc.letter = letter_map[detail_no]
-    except Exception:
+    except Exception:  # noqa: BLE001 - hook logs letter-copy failures without aborting the existing lifecycle.
         frappe.log_error(
             frappe.get_traceback(),
             "gl_entry_before_insert error (letter sync)",
         )
+
+
+def _cached_voucher_letters(voucher_no: str) -> dict[str, str]:
+    cache: dict[str, dict[str, str]] | None = getattr(
+        frappe.local, _LETTER_CACHE_KEY, None
+    )
+    if cache is None:
+        cache = {}
+        setattr(frappe.local, _LETTER_CACHE_KEY, cache)
+    letter_map = cache.get(voucher_no)
+    if letter_map is None:
+        rows: list[_JournalEntryAccountRowDict] = frappe.get_all(
+            "Journal Entry Account",
+            filters={"parent": voucher_no},
+            fields=["name", "account", "letter", "idx"],
+            order_by="idx asc",
+            limit=0,
+        )
+        letter_map = {
+            row["name"]: row.get("letter") or "" for row in rows if row.get("name")
+        }
+        cache[voucher_no] = letter_map
+    return letter_map
 
 
 def je_before_submit(doc: _JournalEntryDoc, _method: object = None) -> None:
@@ -138,7 +138,7 @@ def journal_entry_on_update_after_submit(
 
     try:
         sync_journal_entry_gl_letters(doc)
-    except Exception:
+    except Exception:  # noqa: BLE001 - hook logs letter-copy failures without aborting the existing lifecycle.
         frappe.log_error(
             frappe.get_traceback(),
             "journal_entry_on_update_after_submit error (letter sync)",
@@ -165,8 +165,23 @@ def sync_journal_entry_gl_letters(
     if not gl_entries:
         return
 
+    updates = _changed_gl_letters(doc.accounts, gl_entries)
+
+    if updates:
+        frappe.db.bulk_update("GL Entry", updates)
+
+    cache: dict[str, dict[str, str]] | None = getattr(
+        frappe.local, _LETTER_CACHE_KEY, None
+    )
+    if cache and doc.name in cache:
+        cache.pop(doc.name, None)
+
+
+def _changed_gl_letters(
+    accounts: Iterable[_JournalEntryAccountRow], gl_entries: list[_GLEntryRow]
+) -> dict[str, dict[str, str]]:
     jea_letter_map: dict[str, str] = {}
-    for row in doc.accounts:
+    for row in accounts:
         jea_letter_map[row.name] = row.letter or ""
 
     updates: dict[str, dict[str, str]] = {}
@@ -178,11 +193,4 @@ def sync_journal_entry_gl_letters(
         if (ge.get("letter") or "") != desired:
             updates[ge["name"]] = {"letter": desired}
 
-    if updates:
-        frappe.db.bulk_update("GL Entry", updates)
-
-    cache: dict[str, dict[str, str]] | None = getattr(
-        frappe.local, _LETTER_CACHE_KEY, None
-    )
-    if cache and doc.name in cache:
-        cache.pop(doc.name, None)
+    return updates

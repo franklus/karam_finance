@@ -8,6 +8,17 @@ from typing import TYPE_CHECKING, NotRequired, TypedDict, cast
 
 if TYPE_CHECKING:
     from collections.abc import Iterable
+    from datetime import date
+
+    from erpnext.accounts.doctype.journal_entry.journal_entry import (  # noqa: V104 - quoted cast type.
+        JournalEntry,
+    )
+
+    from karam_finance.letter_reconciliation.utils.doc_events import _JournalEntryDoc
+
+    from .letter_reconciliation_settings import (  # noqa: V104 - quoted cast type.
+        LetterReconciliationSettings,
+    )
 
 import frappe
 from erpnext.accounts import party as erpnext_party
@@ -50,8 +61,8 @@ class VoucherSnapshot(TypedDict):
 
     voucher_no: str
     posting_date: str
-    missing_detail_rows: int
-    active_gl_rows: int
+    missing_detail_rows: int  # noqa: V107 - serialised payload key, consumed through dictionary lookups.
+    active_gl_rows: int  # noqa: V107 - serialised payload key, consumed through dictionary lookups.
 
 
 class ClassifiedVoucher(TypedDict):
@@ -77,9 +88,9 @@ class ReasonSummaryGroup(TypedDict):
     """Grouped summary for repeated rebuild reasons."""
 
     reason: str
-    voucher_count: int
-    unique_account_count: int
-    account_samples: list[str]
+    voucher_count: int  # noqa: V107 - serialised payload key, consumed through dictionary lookups.
+    unique_account_count: int  # noqa: V107 - serialised payload key, consumed through dictionary lookups.
+    account_samples: list[str]  # noqa: V107 - serialised payload key, consumed through dictionary lookups.
     voucher_samples: list[str]
     accounts: NotRequired[list[str]]
     vouchers: NotRequired[list[str]]
@@ -89,7 +100,7 @@ class _ReasonGroupAccumulator(TypedDict):
     """Mutable accumulator used while grouping repeated reasons."""
 
     reason: str
-    voucher_count: int
+    voucher_count: int  # noqa: V107 - serialised payload key, consumed through dictionary lookups.
     accounts: set[str]
     voucher_samples: list[str]
 
@@ -98,7 +109,7 @@ class RebuildPreview(TypedDict):
     """Full server-side preview payload for one subset selection."""
 
     filters: RebuildFilters
-    total_submitted_vouchers: int
+    total_submitted_vouchers: int  # noqa: V107 - serialised payload key, consumed through dictionary lookups.
     eligible: PreviewBucket
     blocked: PreviewBucket
     already_correct: PreviewBucket
@@ -106,7 +117,10 @@ class RebuildPreview(TypedDict):
 
 def get_validated_rebuild_filters() -> RebuildFilters:
     """Return validated subset filters from Letter Reconciliation Settings."""
-    settings = frappe.get_single("Letter Reconciliation Settings")
+    settings = cast(
+        "LetterReconciliationSettings",
+        frappe.get_single("Letter Reconciliation Settings"),
+    )
     company = (settings.rebuild_company or "").strip()
     whole_history = bool(settings.rebuild_whole_history)
     from_posting_date = settings.rebuild_from_posting_date
@@ -116,28 +130,39 @@ def get_validated_rebuild_filters() -> RebuildFilters:
         frappe.throw(
             _("Select a Company before previewing or running the historical rebuild.")
         )
-    if not whole_history and (not from_posting_date or not to_posting_date):
-        frappe.throw(
-            _("Set both From Posting Date and To Posting Date before continuing.")
-        )
-    if (
-        not whole_history
-        and from_posting_date
-        and to_posting_date
-        and getdate(from_posting_date) > getdate(to_posting_date)
-    ):
-        frappe.throw(_("From Posting Date cannot be after To Posting Date."))
-
+    from_date, to_date = _validated_date_range(
+        from_posting_date, to_posting_date, whole_history=whole_history
+    )
     return {
         "company": company,
         "whole_history": whole_history,
-        "from_posting_date": (
-            str(from_posting_date) if from_posting_date and not whole_history else None
-        ),
-        "to_posting_date": (
-            str(to_posting_date) if to_posting_date and not whole_history else None
-        ),
+        "from_posting_date": from_date,
+        "to_posting_date": to_date,
     }
+
+
+def _validated_date_range(
+    start: str | date | None, end: str | date | None, *, whole_history: bool
+) -> tuple[str | None, str | None]:
+    if whole_history:
+        return None, None
+    if not start or not end:
+        frappe.throw(
+            _("Set both From Posting Date and To Posting Date before continuing.")
+        )
+        return None, None
+    from_date, to_date = _required_date(start), _required_date(end)
+    if from_date > to_date:
+        frappe.throw(_("From Posting Date cannot be after To Posting Date."))
+    return str(from_date), str(to_date)
+
+
+def _required_date(value: str | date) -> date:
+    parsed = getdate(value)
+    if parsed is None:
+        frappe.throw(_("Invalid posting date: {0}").format(value))
+        raise AssertionError
+    return parsed
 
 
 def build_rebuild_preview(filters: RebuildFilters) -> RebuildPreview:
@@ -228,7 +253,7 @@ def rebuild_single_voucher(
 
     try:
         # nosemgrep: frappe-get-doc-without-check  # noqa: ERA001
-        doc = frappe.get_doc("Journal Entry", voucher_no)
+        doc = cast("JournalEntry", frappe.get_doc("Journal Entry", voucher_no))
     except frappe.DoesNotExistError:
         frappe.throw(_("Journal Entry {0} no longer exists.").format(voucher_no))
         return
@@ -236,12 +261,13 @@ def rebuild_single_voucher(
         frappe.throw(_("Journal Entry {0} is no longer submitted.").format(voucher_no))
     doc.validate_for_repost()
 
+    flags = cast("frappe._dict[str, object]", frappe.flags)
     previous_flag = getattr(
-        frappe.flags,
+        flags,
         "through_repost_accounting_ledger",
         None,
     )
-    frappe.flags.through_repost_accounting_ledger = True
+    flags.through_repost_accounting_ledger = True
 
     # Bypass validate_account_party_type during repost: historical JEs may
     # have party set on non-Receivable/Payable/Equity accounts (TVA, CNSS,
@@ -259,7 +285,7 @@ def rebuild_single_voucher(
 
     def _noop_validate_balance_type(
         account: object,  # noqa: ARG001
-        adv_adj: bool = False,  # noqa: ARG001
+        adv_adj: bool = False,  # noqa: ARG001, V107 - ERPNext validation callback keyword contract.
     ) -> None:
         return
 
@@ -270,16 +296,18 @@ def rebuild_single_voucher(
     try:
         doc.make_gl_entries(1)
         doc.make_gl_entries()
-        sync_journal_entry_gl_letters(doc, ignore_setting=True)
+        sync_journal_entry_gl_letters(
+            cast("_JournalEntryDoc", doc), ignore_setting=True
+        )
     finally:
         erpnext_party.validate_account_party_type = _orig_validate
         erpnext_gl_entry.validate_account_party_type = _orig_gl_entry_validate
         erpnext_gl_entry.validate_balance_type = _orig_validate_balance_type
         if previous_flag is None:
             with suppress(AttributeError):
-                del frappe.flags.through_repost_accounting_ledger
+                del flags.through_repost_accounting_ledger
         else:
-            frappe.flags.through_repost_accounting_ledger = previous_flag
+            flags.through_repost_accounting_ledger = previous_flag
 
 
 def _get_subset_voucher_rows(filters: RebuildFilters) -> list[VoucherSnapshot]:
@@ -380,7 +408,9 @@ def _get_block_reason(
     if not repost_allowed:
         return _("Journal Entry is not enabled in Repost Accounting Ledger Settings.")
 
-    if latest_closed_period and getdate(posting_date) <= getdate(latest_closed_period):
+    if latest_closed_period and _required_date(posting_date) <= _required_date(
+        latest_closed_period
+    ):
         return _("Voucher falls within a closed fiscal year.")
 
     return None
@@ -420,59 +450,73 @@ def _build_reason_groups(
 ) -> list[ReasonSummaryGroup]:
     """Collapse repeated reason text into grouped voucher/account summaries."""
     grouped: dict[str, _ReasonGroupAccumulator] = {}
-
     for item in items:
-        reason = item["reason"]
-        if not reason:
-            continue
-
-        reason_summary = _summarise_reason(reason)
-        item_accounts = cast("list[str]", item.get("accounts", []))
-        extracted_accounts = extract_accounts_from_reason(reason)
-        accounts = _unique_ordered(item_accounts + extracted_accounts)
-        bucket = grouped.setdefault(
-            reason_summary,
-            {
-                "reason": reason_summary,
-                "voucher_count": 0,
-                "accounts": set(),
-                "voucher_samples": [],
-            },
+        if item["reason"]:
+            _accumulate_reason(grouped, item, sample_limit=sample_limit)
+    groups = [
+        _reason_group(
+            bucket, sample_limit=sample_limit, include_full_lists=include_full_lists
         )
-        bucket["voucher_count"] += 1
+        for bucket in grouped.values()
+    ]
+    groups.sort(key=_reason_group_sort_key)
+    return groups if group_limit is None else groups[:group_limit]
 
-        voucher_samples = bucket["voucher_samples"]
-        if sample_limit is None or len(voucher_samples) < sample_limit:
-            voucher_samples.append(item["voucher_no"])
 
-        bucket["accounts"].update(accounts)
+def _accumulate_reason(
+    grouped: dict[str, _ReasonGroupAccumulator],
+    item: ClassifiedVoucher,
+    *,
+    sample_limit: int | None,
+) -> None:
+    reason = item["reason"]
+    reason_summary = _summarise_reason(reason)
+    accounts = _unique_ordered(
+        item.get("accounts", []) + extract_accounts_from_reason(reason)
+    )
+    bucket = grouped.setdefault(
+        reason_summary,
+        {
+            "reason": reason_summary,
+            "voucher_count": 0,
+            "accounts": set(),
+            "voucher_samples": [],
+        },
+    )
+    bucket["voucher_count"] += 1
+    voucher_samples = bucket["voucher_samples"]
+    if sample_limit is None or len(voucher_samples) < sample_limit:
+        voucher_samples.append(item["voucher_no"])
+    bucket["accounts"].update(accounts)
 
-    groups: list[ReasonSummaryGroup] = []
-    for bucket in grouped.values():
-        accounts = sorted(bucket["accounts"])
-        voucher_samples = list(bucket["voucher_samples"])
-        group: ReasonSummaryGroup = {
-            "reason": bucket["reason"],
-            "voucher_count": bucket["voucher_count"],
-            "unique_account_count": len(accounts),
-            "account_samples": (
-                accounts if sample_limit is None else accounts[:sample_limit]
-            ),
-            "voucher_samples": (
-                voucher_samples
-                if sample_limit is None
-                else voucher_samples[:sample_limit]
-            ),
-        }
-        if include_full_lists:
-            group["accounts"] = accounts
-            group["vouchers"] = sorted(bucket["voucher_samples"])
-        groups.append(group)
 
-    groups.sort(key=lambda group: (-group["voucher_count"], group["reason"]))
-    if group_limit is None:
-        return groups
-    return groups[:group_limit]
+def _reason_group(
+    bucket: _ReasonGroupAccumulator,
+    *,
+    sample_limit: int | None,
+    include_full_lists: bool,
+) -> ReasonSummaryGroup:
+    accounts = sorted(bucket["accounts"])
+    voucher_samples = list(bucket["voucher_samples"])
+    group: ReasonSummaryGroup = {
+        "reason": bucket["reason"],
+        "voucher_count": bucket["voucher_count"],
+        "unique_account_count": len(accounts),
+        "account_samples": accounts
+        if sample_limit is None
+        else accounts[:sample_limit],
+        "voucher_samples": voucher_samples
+        if sample_limit is None
+        else voucher_samples[:sample_limit],
+    }
+    if include_full_lists:
+        group["accounts"] = accounts
+        group["vouchers"] = sorted(bucket["voucher_samples"])
+    return group
+
+
+def _reason_group_sort_key(group: ReasonSummaryGroup) -> tuple[int, str]:
+    return -group["voucher_count"], group["reason"]
 
 
 def _summarise_reason(reason: str) -> str:
