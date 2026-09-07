@@ -141,6 +141,7 @@ jobs:
           COVERAGE_RCFILE: /home/runner/frappe-bench/apps/karam_finance/pyproject.toml
         run: |
           ../env/bin/python -m coverage json -o coverage.json --fail-under=0
+          ../env/bin/python -m coverage report --show-missing --sort=cover --fail-under=0
           ../env/bin/python - <<'PY'
           import json
           from pathlib import Path
@@ -163,3 +164,11 @@ jobs:
           if failures:
               raise SystemExit("; ".join(failures))
           PY
+
+      - name: Upload coverage report
+        if: ${{ !cancelled() && steps.dependencies.outcome == 'success' }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: server-coverage
+          path: /home/runner/frappe-bench/sites/coverage.json
+          if-no-files-found: error
