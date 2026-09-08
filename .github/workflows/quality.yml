@@ -32,7 +32,7 @@ jobs:
           cache: npm
 
       - name: Install quality tools
-        run: python -m pip install pre-commit==4.6.1
+        run: python -m pip install pre-commit==4.6.2
 
       - name: Install JavaScript tools
         run: npm ci --ignore-scripts
@@ -71,7 +71,7 @@ jobs:
           cache: pip
 
       - name: Install Semgrep
-        run: python -m pip install semgrep==1.172.0
+        run: python -m pip install semgrep==1.176.0
 
       - name: Checkout extended Frappe rules
         uses: actions/checkout@v6
