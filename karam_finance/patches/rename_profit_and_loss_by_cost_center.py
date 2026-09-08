@@ -2,6 +2,8 @@
 
 import frappe
 
+from karam_finance.patches.report_rename import rename_report
+
 OLD_NAMES = (
     "Profit and Loss Statement by Cost Center",
     "(Karam) Profit and Loss Statement by Cost Center",
@@ -16,10 +18,11 @@ def execute() -> None:
 
 
 def _rename_report(old_name: str) -> None:
-    # Do not merge reports: an existing target needs explicit resolution.
-    frappe.rename_doc("Report", old_name, NEW_NAME, force=True)
+    rename_report(old_name, NEW_NAME, "Karam General")
     frappe.db.set_value("Report", NEW_NAME, "report_name", NEW_NAME)
     for doctype in ("Workspace Link", "Workspace Shortcut", "Workspace Sidebar Item"):
+        if not frappe.db.table_exists(doctype):
+            continue
         frappe.db.set_value(
             doctype,
             {"link_to": NEW_NAME, "label": old_name},

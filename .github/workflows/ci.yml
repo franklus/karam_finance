@@ -2,7 +2,7 @@ name: Karam Finance CI
 
 on:
   push:
-    branches: [develop]
+    branches: [version-16]
   pull_request:
   workflow_dispatch:
   workflow_call:
@@ -128,6 +128,7 @@ jobs:
           ../env/bin/python -m coverage run --append -m pytest -q
           ../apps/karam_finance/karam_finance/karam_general/tests/test_schema_integrity.py
           ../apps/karam_finance/karam_finance/karam_general/tests/test_trial_balance_report.py
+          ../apps/karam_finance/karam_finance/reporting_currency/tests/test_reporting_gl_query_contracts.py
           ../apps/karam_finance/karam_finance/karam_series/tests/test_hooks.py
           ../apps/karam_finance/karam_finance/karam_series/tests/test_doctype_list_sync.py
           ../apps/karam_finance/karam_finance/letter_reconciliation/doctype/letter_reconciliation/test_letter_row_links.py

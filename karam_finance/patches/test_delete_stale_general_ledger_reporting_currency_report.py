@@ -51,10 +51,18 @@ class TestDeleteStaleGeneralLedgerReportingCurrencyReport(TestCase):
             reports.remove(old_name)
             reports.add(new_name)
 
+        def rename_report(old: str, new: str, _module: str) -> None:
+            rename_doc("Report", old, new)
+
         frappe_stub.rename_doc.side_effect = rename_doc
 
         with (
             patch.object(rename, "frappe", frappe_stub),
+            patch.object(
+                rename,
+                "rename_report",
+                side_effect=rename_report,
+            ),
             patch.object(cleanup, "frappe", cleanup_frappe, create=True),
         ):
             rename.execute()
