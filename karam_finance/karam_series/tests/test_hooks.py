@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import date
+from datetime import UTC, date, datetime
 from types import SimpleNamespace
 from typing import Any, cast
 from unittest.mock import Mock, call, patch
@@ -335,3 +335,227 @@ def test_journal_entry_hook_populates_tokens_before_name_assignment() -> None:
     assert _value(doc, "karam_posting_day") == "19"
     assert _value(doc, "karam_series") == "FXREV"
     assert _value(doc, "translation") == "FX"
+
+
+def test_series_hooks_leave_documents_without_custom_field_untouched() -> None:
+    doc = cast(Document, SimpleNamespace(doctype="Sales Invoice", translation="stale"))
+
+    with _db_patch() as db:
+        series_hooks.populate_karam_series_fields(doc)
+        series_hooks.populate_karam_series_from_source_document(doc)
+
+    assert _value(doc, "translation") == "stale"
+    db.get_value.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    "doc",
+    [
+        _doc("Unsupported", karam_series="FXREV"),
+        _doc("Sales Invoice", karam_series=""),
+    ],
+)
+def test_applicability_ignores_unsupported_or_blank_series(doc: Document) -> None:
+    with _db_patch() as db:
+        series_hooks.validate_karam_series_applicability(doc)
+
+    db.get_value.assert_not_called()
+
+
+def test_existing_source_selection_is_preserved_and_translation_refreshed() -> None:
+    doc = _doc(karam_series="FXREV", translation="stale")
+
+    with (
+        patch.object(series_hooks, "populate_karam_series_fields") as populate,
+        patch.object(series_hooks, "_populate_depreciation_series") as depreciation,
+    ):
+        series_hooks.populate_karam_series_from_source_document(doc)
+
+    populate.assert_called_once_with(doc)
+    depreciation.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    "doc",
+    [
+        _doc(voucher_type="Depreciation Entry", accounts=[]),
+        _doc(voucher_type="Ordinary Entry", accounts=[]),
+        _doc(voucher_type="Exchange Rate Revaluation", accounts=[]),
+    ],
+)
+def test_generated_entry_without_single_supported_source_stays_blank(
+    doc: Document,
+) -> None:
+    with _db_patch() as db:
+        series_hooks.populate_karam_series_from_source_document(doc)
+
+    assert _value(doc, "karam_series") == ""
+    assert _value(doc, "translation") == ""
+    db.get_value.assert_not_called()
+
+
+def test_reference_helpers_handle_nonlist_rows_mappings_and_document_accessors() -> (
+    None
+):
+    assert (
+        series_hooks._get_single_reference_name(_doc(accounts="not-a-list"), "Asset")
+        is None
+    )
+    assert (
+        series_hooks._get_row_value({"reference_name": "AST-1"}, "reference_name")
+        == "AST-1"
+    )
+
+    class Meta:
+        @staticmethod
+        def has_field(fieldname: str) -> bool:
+            return fieldname == "karam_series"
+
+    calls: list[tuple[str, object]] = []
+
+    class GetterSetter:
+        meta = Meta()
+
+        @staticmethod
+        def get(fieldname: str) -> object:
+            return "FXREV" if fieldname == "karam_series" else None
+
+        @staticmethod
+        def set(fieldname: str, value: object) -> None:
+            calls.append((fieldname, value))
+
+    doc = cast(Document, GetterSetter())
+    assert series_hooks._document_has_field(doc, "karam_series") is True
+    assert series_hooks._get_document_value(doc, "karam_series") == "FXREV"
+    series_hooks._set_document_value(doc, "translation", "FX")
+    assert calls == [("translation", "FX")]
+
+
+def test_compatibility_setter_resolves_canonical_translation() -> None:
+    doc = _doc()
+
+    with patch.object(series_hooks, "_set_karam_series") as setter:
+        series_hooks._set_karam_series_and_translation(doc, "FXREV", "ignored")
+
+    setter.assert_called_once_with(doc, "FXREV")
+
+
+def test_applicability_field_refuses_unsupported_doctypes() -> None:
+    assert series_hooks._applicability_field("Unsupported") is None
+
+
+def test_depreciation_reference_without_series_clears_paired_fields() -> None:
+    doc = _doc(
+        voucher_type="Depreciation Entry",
+        accounts=[SimpleNamespace(reference_type="Asset", reference_name="AST-1")],
+    )
+
+    with _db_patch(return_value="") as db:
+        assert series_hooks._populate_depreciation_series(doc) is False
+
+    assert _value(doc, "karam_series") == ""
+    assert _value(doc, "translation") == ""
+    db.get_value.assert_called_once_with("Asset", "AST-1", "karam_series")
+
+
+def test_applicability_throw_stops_after_missing_record() -> None:
+    doc = _doc("Sales Invoice", karam_series="FXREV")
+
+    with (
+        _db_patch(return_value=None),
+        patch.object(series_hooks, "_", str),
+        patch.object(
+            series_hooks.frappe,
+            "throw",
+            side_effect=series_hooks.frappe.ValidationError("missing"),
+        ),
+        pytest.raises(series_hooks.frappe.ValidationError, match="missing"),
+    ):
+        series_hooks.validate_karam_series_applicability(doc)
+
+
+def test_applicability_accepts_series_enabled_for_the_doctype() -> None:
+    doc = _doc("Sales Invoice", karam_series="FXREV")
+
+    with _db_patch(return_value=1) as db:
+        series_hooks.validate_karam_series_applicability(doc)
+
+    db.get_value.assert_called_once_with("Karam Series", "FXREV", "sales_invoice")
+
+
+@pytest.mark.parametrize(
+    ("value", "expected"),
+    [
+        (None, None),
+        ("", None),
+        ("  ", None),
+        (date(2026, 1, 2), "2026-01-02"),
+        ("2026-01-02T03:04:05", "2026-01-02"),
+        ("not-a-date", None),
+    ],
+)
+def test_date_normalisation_handles_supported_and_malformed_values(
+    value: object, expected: str | None
+) -> None:
+    assert date_fields._normalise_date(value) == expected
+
+
+def test_date_field_helpers_support_meta_field_lists_and_document_accessors() -> None:
+    meta = SimpleNamespace(
+        fields=[
+            SimpleNamespace(fieldname=name)
+            for name in date_fields.KARAM_DATE_FIELD_NAMES
+        ]
+    )
+    assert date_fields._meta_has_field(cast(Any, meta), "karam_posting_date") is True
+    assert date_fields._meta_has_field(cast(Any, meta), "missing") is False
+
+    writes: list[tuple[str, str]] = []
+
+    class Accessor:
+        @staticmethod
+        def get(fieldname: str) -> object:
+            return "2026-01-02" if fieldname == "posting_date" else None
+
+        @staticmethod
+        def set(fieldname: str, value: str) -> None:
+            writes.append((fieldname, value))
+
+    doc = cast(Document, Accessor())
+    assert date_fields._get_doc_value(doc, None) is None
+    assert date_fields._get_doc_value(doc, "posting_date") == "2026-01-02"
+    date_fields._set_doc_values(doc, {"karam_posting_date": "20260102"})
+    assert writes == [("karam_posting_date", "20260102")]
+
+
+def test_date_field_helpers_cover_document_and_meta_fallbacks() -> None:
+    """Keep unsupported schemas, document attributes, and compatibility reads safe."""
+    doc = cast(
+        Document, SimpleNamespace(doctype="Journal Entry", posting_date="2026-01-02")
+    )
+
+    def has_no_fields(_fieldname: str) -> bool:
+        return False
+
+    with patch.object(
+        date_fields.frappe,
+        "get_meta",
+        return_value=SimpleNamespace(has_field=has_no_fields),
+    ):
+        date_fields.populate_karam_date_fields(doc)
+    assert not hasattr(doc, "karam_posting_date")
+
+    def has_present_field(fieldname: str) -> bool:
+        return fieldname == "present"
+
+    meta = SimpleNamespace(has_field=has_present_field)
+    assert date_fields._meta_has_field(cast(Any, meta), "present") is True
+    with patch.object(date_fields.frappe, "get_meta", return_value=meta):
+        assert date_fields._has_karam_date_fields("Journal Entry") is False
+    assert date_fields._get_source_date(doc) == "2026-01-02"
+    date_fields._set_doc_values(doc, {"karam_posting_date": "20260102"})
+    assert cast(Any, doc).karam_posting_date == "20260102"
+    assert (
+        date_fields._normalise_date(datetime(2026, 1, 2, 3, 4, tzinfo=UTC))
+        == "2026-01-02"
+    )

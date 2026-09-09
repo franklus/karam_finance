@@ -37,6 +37,8 @@ def _validate_required_dates(filters: Any) -> None:
         try:
             filters[field] = getdate(value)
         except TypeError, ValueError:
+            filters[field] = None
+        if filters[field] is None:
             frappe.throw(_("Invalid date for {0}").format(field))
     if filters.from_date > filters.to_date:
         frappe.throw(_("From Date must be before To Date"))

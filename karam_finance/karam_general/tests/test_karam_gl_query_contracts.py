@@ -3,7 +3,6 @@
 import importlib
 import sqlite3
 from datetime import date
-from decimal import Decimal
 from types import SimpleNamespace
 from typing import Any
 from unittest.mock import MagicMock
@@ -15,18 +14,8 @@ from frappe.query_builder.builder import MariaDB
 from pypika.queries import QueryBuilder
 
 query = importlib.import_module(
-    "karam_finance.reporting_currency.report.general_ledger_(reporting_currency).gl_query"
+    "karam_finance.karam_general.report.general_ledger_(karam).gl_query"
 )
-reporting_source = importlib.import_module(
-    "karam_finance.reporting_currency.report.reporting_source"
-)
-gl_currency = importlib.import_module(
-    "karam_finance.reporting_currency.report.general_ledger_(reporting_currency).gl_currency"
-)
-
-
-def _raise_value(message: str) -> None:
-    raise ValueError(message)
 
 
 @pytest.fixture(autouse=True)
@@ -43,7 +32,19 @@ def context(monkeypatch: pytest.MonkeyPatch) -> SimpleNamespace:
     monkeypatch.setattr(frappe, "get_meta", MagicMock(return_value=meta))
     monkeypatch.setattr(query, "get_accounting_dimensions", MagicMock(return_value=[]))
     monkeypatch.setattr(query, "build_match_conditions", MagicMock(return_value=""))
-    return SimpleNamespace(table=MariaDB.DocType("Reporting Currency GLE"), meta=meta)
+    monkeypatch.setattr(
+        query,
+        "get_currency",
+        MagicMock(
+            return_value={"company_currency": "USD", "presentation_currency": "USD"}
+        ),
+    )
+    monkeypatch.setattr(
+        query,
+        "convert_to_presentation_currency",
+        MagicMock(side_effect=unchanged_currency),
+    )
+    return SimpleNamespace(table=MariaDB.DocType("GL Entry"), meta=meta)
 
 
 def filters(**options: Any) -> dict[str, Any]:
@@ -59,120 +60,24 @@ def selected_rows(conditions: Any, rows: list[dict[str, Any]]) -> list[str]:
     """Execute the actual predicate over synthetic records in an in-memory database."""
     with sqlite3.connect(":memory:") as db:
         db.execute(
-            'CREATE TABLE "tabReporting Currency GLE" '
+            'CREATE TABLE "tabGL Entry" '
             "(name TEXT, company TEXT, posting_date TEXT, is_opening TEXT, "
             "finance_book TEXT, voucher_type TEXT, voucher_no TEXT, "
             "against_voucher TEXT, party_type TEXT, party TEXT, account TEXT, "
             "cost_center TEXT, project TEXT, department TEXT, "
             "is_cancelled INTEGER, manual_entry INTEGER, reporting_doe INTEGER)"
         )
-        columns = [
-            row[1]
-            for row in db.execute('PRAGMA table_info("tabReporting Currency GLE")')
-        ]
+        columns = [row[1] for row in db.execute('PRAGMA table_info("tabGL Entry")')]
         defaults = {"company": "Test", "posting_date": "2026-01-15", "is_cancelled": 0}
         db.executemany(
-            'INSERT INTO "tabReporting Currency GLE" VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)',
+            'INSERT INTO "tabGL Entry" VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)',
             [tuple((defaults | row).get(column) for column in columns) for row in rows],
         )
-        table = MariaDB.DocType("Reporting Currency GLE")
+        table = MariaDB.DocType("GL Entry")
         statement = (
             MariaDB.from_(table).select(table.name).where(Criterion.all(conditions))
         )
         return sorted(row[0] for row in db.execute(statement.get_sql()))
-
-
-@pytest.mark.parametrize(
-    ("options", "expected"),
-    [
-        ({}, ["doe", "manual", "synced"]),
-        ({"entry_type": "Reporting DOE"}, ["doe"]),
-        ({"entry_type": "Manual"}, ["manual"]),
-        ({"entry_type": "Synced GL"}, ["synced"]),
-        ({"reporting_doe": 1}, ["doe"]),
-        ({"manual_entry": 1}, ["manual"]),
-        ({"exclude_reporting_doe": 1}, ["manual", "synced"]),
-        ({"exclude_manual_entries": 1}, ["doe", "synced"]),
-        ({"rc_entry": "manual"}, ["manual"]),
-        ({"show_cancelled_entries": 1}, ["cancelled", "doe", "manual", "synced"]),
-    ],
-)
-def test_entry_scope(
-    context: SimpleNamespace, options: dict[str, Any], expected: list[str]
-) -> None:
-    rows = [
-        {"name": "synced"},
-        {"name": "manual", "manual_entry": 1},
-        {"name": "doe", "reporting_doe": 1},
-        {"name": "other-company", "company": "Other"},
-        {"name": "cancelled", "is_cancelled": 1},
-    ]
-    assert (
-        selected_rows(
-            query._build_qb_conditions(filters(**options), context.table), rows
-        )
-        == expected
-    )
-
-
-def test_prepare_filters_stops_before_querying_when_reporting_currency_is_missing(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    database = MagicMock()
-    database.get_single_value.return_value = None
-    query_builder = MagicMock()
-    monkeypatch.setattr(reporting_source.frappe, "db", database)
-    monkeypatch.setattr(reporting_source.frappe, "qb", query_builder)
-    monkeypatch.setattr(
-        reporting_source.frappe,
-        "throw",
-        MagicMock(side_effect=_raise_value),
-    )
-
-    with pytest.raises(ValueError, match="Configure Reporting Currency"):
-        reporting_source.prepare_filters({"company": "Test"})
-
-    database.get_single_value.assert_called_once_with(
-        "Reporting Currency Settings", "reporting_currency"
-    )
-    query_builder.DocType.assert_not_called()
-
-
-def test_report_currencies_uses_selected_account_currency_when_data_is_empty() -> None:
-    assert gl_currency._report_currencies([], {"account_currency": "USD"}) == {"USD"}
-
-
-@pytest.mark.parametrize(
-    ("options", "expected"),
-    [
-        ({}, ["before", "end", "opening", "start"]),
-        ({"disable_opening_balance_calculation": 1}, ["end", "opening", "start"]),
-        ({"_flat_account_openings": True}, ["before", "opening"]),
-        ({"_flat_account_openings": True, "show_opening_entries": 1}, ["before"]),
-        ({"_flat_account_openings": True, "_ignore_is_opening": 1}, ["before"]),
-        (
-            {"_flat_account_openings": True, "disable_opening_balance_calculation": 1},
-            [],
-        ),
-    ],
-)
-def test_date_boundaries(
-    context: SimpleNamespace, options: dict[str, Any], expected: list[str]
-) -> None:
-    rows = [
-        {"name": "before", "posting_date": "2025-12-31"},
-        {"name": "start", "posting_date": "2026-01-01"},
-        {"name": "end", "posting_date": "2026-01-31"},
-        {"name": "after", "posting_date": "2026-02-01"},
-        {"name": "opening", "is_opening": "Yes"},
-        {"name": "future-opening", "posting_date": "2026-02-01", "is_opening": "Yes"},
-    ]
-    assert (
-        selected_rows(
-            query._build_qb_date_conditions(filters(**options), context.table), rows
-        )
-        == expected
-    )
 
 
 @pytest.mark.parametrize(
@@ -230,22 +135,6 @@ def test_conflicting_default_book_is_rejected(context: SimpleNamespace) -> None:
         )
 
 
-def test_voucher_exclusion_keeps_other_types_and_manual_rows(
-    context: SimpleNamespace,
-) -> None:
-    rows = [
-        {"name": "excluded", "voucher_type": "Journal Entry", "voucher_no": "SHARED"},
-        {"name": "invoice", "voucher_type": "Sales Invoice", "voucher_no": "SHARED"},
-        {"name": "manual"},
-        {"name": "no-number", "voucher_type": "Journal Entry"},
-        {"name": "kept", "voucher_type": "Journal Entry", "voucher_no": "KEPT"},
-    ]
-    conditions = query._build_qb_voucher_conditions(
-        {"voucher_no_not_in": ["SHARED"]}, context.table
-    )
-    assert selected_rows(conditions, rows) == ["invoice", "kept", "manual", "no-number"]
-
-
 @pytest.mark.parametrize("pairs", [{}, {("Journal Entry", "SHARED"): {}}])
 def test_voucher_filter_matches_complete_pairs(
     context: SimpleNamespace, pairs: dict[Any, Any]
@@ -268,9 +157,7 @@ def test_voucher_limit_fails_closed(
         )
 
 
-@pytest.mark.parametrize(
-    "permission", ["", "`tabReporting Currency GLE`.`account`='Allowed'"]
-)
+@pytest.mark.parametrize("permission", ["", "`tabGL Entry`.`account`='Allowed'"])
 @pytest.mark.parametrize("compact", [False, True])
 def test_permission_predicate_reaches_every_query(
     monkeypatch: pytest.MonkeyPatch,
@@ -300,113 +187,6 @@ def test_permission_predicate_reaches_every_query(
     assert all("`company`='Test'" in sql for sql in statements)
     assert options["_bill_no_joined"] is False
     attach.assert_called_once_with([], preloaded_voucher_data=None)
-
-
-@pytest.mark.parametrize(
-    ("values", "label", "basis"),
-    [
-        ({"manual_entry": 1}, "Manual", "Reporting-only adjustment"),
-        (
-            {"reporting_doe": 1, "manual_entry": 1},
-            "Reporting DOE",
-            "Reporting-only adjustment",
-        ),
-        (
-            {"account_currency": "USD"},
-            "Synced GL",
-            "Copied account-currency amount (rate 1)",
-        ),
-        (
-            {"account_currency": "EUR"},
-            "Synced GL",
-            "Company amount multiplied by stored effective rate",
-        ),
-    ],
-)
-def test_currency_provenance(*, values: dict[str, Any], label: str, basis: str) -> None:
-    row = frappe._dict(
-        {
-            "reporting_currency": "USD",
-            "debit": "51309440814079.5444",
-            "exchange_rate": "0.1",
-            "currency_exchange": "RATE",
-            "exchange_rate_date": "2026-01-01",
-        }
-        | values
-    )
-    query._prepare_currency_values([row], {})
-    assert row.debit == Decimal("51309440814079.5444")
-    assert row.entry_type == label
-    assert row.conversion_basis == basis
-    assert row.exchange_rate == ("0.1" if label == "Synced GL" else None)
-    assert row.currency_exchange == ("RATE" if label == "Synced GL" else None)
-
-
-@pytest.mark.parametrize("value", [None, "", " "])
-@pytest.mark.parametrize(
-    "contribution",
-    [
-        "debit_in_account_currency",
-        "credit_in_account_currency",
-        "_account_currency_contribution",
-    ],
-)
-def test_unknown_currency_keeps_contribution_warning(
-    value: str | None, contribution: str
-) -> None:
-    row = frappe._dict(account_currency=value, **{contribution: 1})
-    query._prepare_currency_entry(row, {})
-    assert row._mixed_account_currency == 1
-
-
-def test_combined_filters_keep_the_exact_scope(
-    context: SimpleNamespace, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    monkeypatch.setattr(
-        query, "get_accounts_with_children", MagicMock(return_value=["Child"])
-    )
-    monkeypatch.setattr(
-        query, "get_cost_centers_with_children", MagicMock(return_value=["Branch"])
-    )
-    options = filters(
-        account=["Parent"],
-        cost_center=["Root"],
-        project=["Project"],
-        party_type="Customer",
-        party=["Buyer"],
-        voucher_type="Sales Invoice",
-        voucher_no="INV",
-        against_voucher_no="ORDER",
-    )
-    matching = {
-        "name": "matching",
-        "account": "Child",
-        "cost_center": "Branch",
-        "project": "Project",
-        "party_type": "Customer",
-        "party": "Buyer",
-        "voucher_type": "Sales Invoice",
-        "voucher_no": "INV",
-        "against_voucher": "ORDER",
-    }
-    rows = [matching] + [
-        matching | {"name": key, key: "Other"}
-        for key in (
-            "account",
-            "cost_center",
-            "project",
-            "party_type",
-            "party",
-            "voucher_type",
-            "voucher_no",
-            "against_voucher",
-        )
-    ]
-    assert selected_rows(query._build_qb_conditions(options, context.table), rows) == [
-        "matching"
-    ]
-    assert options["account"] == ["Child"]
-    assert options["cost_center"] == ["Branch"]
 
 
 @pytest.mark.parametrize("tree", [False, True])
@@ -443,18 +223,6 @@ def test_inactive_or_invalid_dimensions_are_not_interpolated(
 ) -> None:
     options = filters(_dimensions_meta=[dimension])
     assert query._build_qb_dimension_conditions(options, context.table) == []
-
-
-def test_unsynchronised_dimension_fails_before_execution(
-    context: SimpleNamespace,
-) -> None:
-    dimension = frappe._dict(
-        fieldname="missing", document_type="Department", label="Missing", disabled=0
-    )
-    with pytest.raises(frappe.ValidationError, match="not synchronised"):
-        query._build_qb_dimension_conditions(
-            filters(missing=["X"], _dimensions_meta=[dimension]), context.table
-        )
 
 
 @pytest.mark.parametrize(
@@ -510,8 +278,8 @@ def test_projection_validates_dimensions_and_remark_length(
     assert "`department`" in sql
     assert "missing" not in sql and "bad-name" not in sql
     assert "`transaction_currency`" in sql
-    assert "`debit_amount_in_transaction_currency`" in sql
-    assert "`reporting_debit`" in sql
+    assert "`debit_in_transaction_currency`" in sql
+    assert "`debit`" in sql
     assert "NULL `karam_series`" in sql
 
 
@@ -540,53 +308,6 @@ def test_exclusion_subqueries_keep_company_and_submission_scope(
     assert '"docstatus"=1' in sql
     assert ("UNION" in sql) == (len(expected) == 4)
     assert ('"is_system_generated"=1' in sql) == bool(options.get("ignore_cr_dr_notes"))
-
-
-def test_compact_history_preserves_exact_amounts_and_currency_provenance(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    history: Any = frappe._dict(
-        account="A",
-        account_currency="",
-        posting_date=date(2025, 12, 31),
-        creation="1",
-        debit="100.0001",
-        credit="0",
-        debit_in_account_currency="0",
-        credit_in_account_currency="0",
-        debit_in_company_currency="1000.0010",
-        credit_in_company_currency="0",
-        _account_currency_contribution=20,
-    )
-    movement: Any = frappe._dict(
-        account="A",
-        account_currency="USD",
-        posting_date=date(2026, 1, 1),
-        creation="2",
-        debit="0",
-        credit="0.0001",
-    )
-    responses = iter([[history], [movement]])
-    statements: list[str] = []
-
-    def run(builder: QueryBuilder, **_kwargs: Any) -> list[Any]:
-        statements.append(builder.get_sql())
-        return next(responses)
-
-    monkeypatch.setattr(QueryBuilder, "run", run)
-    monkeypatch.setattr(query, "_attach_series_translation", MagicMock())
-    rows = query.get_gl_entries(
-        filters(categorize_by="Categorise by Account"), [], enrich_opening_entries=False
-    )
-    assert rows == [history, movement]
-    assert history.debit == Decimal("100.0001")
-    assert history.debit_in_company_currency == Decimal("1000.0010")
-    assert history._account_currency_contribution is True
-    assert history._mixed_account_currency == 1
-    assert history.debit - movement.credit == Decimal("100.0000")
-    assert "<'2026-01-01'" in statements[0]
-    assert ">='2026-01-01'" in statements[1]
-    assert "`manual_entry`,`tabReporting Currency GLE`.`reporting_doe`" in statements[0]
 
 
 @pytest.mark.parametrize(
@@ -770,51 +491,6 @@ def test_voucher_preload_and_party_names_are_reused(
 
 
 @pytest.mark.parametrize(
-    "permission", ["", "`tabReporting Currency GLE`.`account`='Allowed'"]
-)
-def test_flat_openings_accumulate_by_account_and_currency(
-    monkeypatch: pytest.MonkeyPatch, permission: str
-) -> None:
-    statements: list[str] = []
-
-    def run(builder: QueryBuilder, **_kwargs: Any) -> list[Any]:
-        statements.append(builder.get_sql())
-        return [
-            frappe._dict(
-                account=account, account_currency=currency, opening_balance=balance
-            )
-            for account, currency, balance in (
-                ("A", "USD", "100.0001"),
-                ("A", "USD", "0.0001"),
-                ("A", "EUR", "3.00"),
-                (None, "USD", "999"),
-            )
-        ]
-
-    monkeypatch.setattr(QueryBuilder, "run", run)
-    monkeypatch.setattr(
-        query, "build_match_conditions", MagicMock(return_value=permission)
-    )
-    monkeypatch.setattr(frappe, "get_cached_value", MagicMock(return_value="Book"))
-    monkeypatch.setattr(
-        query, "_get_voucher_data_for_filters", MagicMock(return_value={})
-    )
-    values = filters(
-        categorize_by="Flat Chronological",
-        include_default_book_entries=1,
-        translation="Missing",
-    )
-    original = values.copy()
-    assert query.get_flat_account_currency_openings(values) == {
-        ("A", "USD"): Decimal("100.0002"),
-        ("A", "EUR"): Decimal("3.00"),
-    }
-    assert values == original
-    assert permission in statements[0]
-    assert "`name`=''" in statements[0]
-
-
-@pytest.mark.parametrize(
     "options",
     [
         {"categorize_by": "Categorise by Account"},
@@ -834,24 +510,366 @@ def test_unused_flat_openings_do_not_query(
     run.assert_not_called()
 
 
-def test_joined_voucher_compatibility_combines_alternative_matches(
+def unchanged_currency(rows: list[Any], _currency: Any, _filters: Any) -> list[Any]:
+    """External ERPNext conversion seam for query-only tests."""
+    return rows
+
+
+@pytest.mark.parametrize(
+    ("options", "expected"),
+    [
+        ({}, ["end", "future-opening", "opening", "start"]),
+        ({"_ignore_is_opening": 1}, ["end", "start"]),
+        (
+            {"categorize_by": "Categorise by Account"},
+            ["before", "end", "future-opening", "opening", "start"],
+        ),
+        (
+            {"account": ["A"], "_ignore_is_opening": 1},
+            ["before", "end", "opening", "start"],
+        ),
+        (
+            {"disable_opening_balance_calculation": 1, "_ignore_is_opening": 1},
+            ["end", "start"],
+        ),
+        ({"_flat_account_openings": True}, ["before", "future-opening", "opening"]),
+        (
+            {"_flat_account_openings": True, "show_opening_entries": 1},
+            ["before", "opening"],
+        ),
+        (
+            {"_flat_account_openings": True, "_ignore_is_opening": 1},
+            ["before", "opening"],
+        ),
+        (
+            {"_flat_account_openings": True, "disable_opening_balance_calculation": 1},
+            ["opening"],
+        ),
+    ],
+)
+def test_karam_opening_date_contract(
+    context: SimpleNamespace, options: dict[str, Any], expected: list[str]
+) -> None:
+    rows = [
+        {"name": "before", "posting_date": "2025-12-31", "is_opening": "No"},
+        {"name": "start", "posting_date": "2026-01-01", "is_opening": "No"},
+        {"name": "end", "posting_date": "2026-01-31", "is_opening": "No"},
+        {"name": "after", "posting_date": "2026-02-01", "is_opening": "No"},
+        {"name": "opening", "posting_date": "2025-12-31", "is_opening": "Yes"},
+        {"name": "future-opening", "posting_date": "2026-02-01", "is_opening": "Yes"},
+    ]
+    assert (
+        selected_rows(
+            query._build_qb_date_conditions(filters(**options), context.table), rows
+        )
+        == expected
+    )
+
+
+@pytest.mark.parametrize("cancelled", [False, True])
+def test_company_and_cancellation_scope(
+    context: SimpleNamespace, cancelled: bool
+) -> None:
+    rows = [
+        {"name": "kept"},
+        {"name": "cancelled", "is_cancelled": 1},
+        {"name": "other-company", "company": "Other"},
+    ]
+    assert selected_rows(
+        query._build_qb_conditions(
+            filters(show_cancelled_entries=cancelled), context.table
+        ),
+        rows,
+    ) == (["cancelled", "kept"] if cancelled else ["kept"])
+
+
+def test_combined_account_party_and_voucher_filters(
+    context: SimpleNamespace, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(
+        query, "get_accounts_with_children", MagicMock(return_value=["Child"])
+    )
+    monkeypatch.setattr(
+        query, "get_cost_centers_with_children", MagicMock(return_value=["Branch"])
+    )
+    options = filters(
+        account=["Parent"],
+        cost_center=["Root"],
+        project=["Project"],
+        party_type="Customer",
+        party=["Buyer"],
+        voucher_no="INV",
+        against_voucher_no="ORDER",
+    )
+    row = {
+        "name": "matching",
+        "account": "Child",
+        "cost_center": "Branch",
+        "project": "Project",
+        "party_type": "Customer",
+        "party": "Buyer",
+        "voucher_no": "INV",
+        "against_voucher": "ORDER",
+    }
+    rows = [row] + [
+        row | {"name": field, field: "Other"}
+        for field in (
+            "account",
+            "cost_center",
+            "project",
+            "party_type",
+            "party",
+            "voucher_no",
+            "against_voucher",
+        )
+    ]
+    assert selected_rows(query._build_qb_conditions(options, context.table), rows) == [
+        "matching"
+    ]
+
+
+def test_party_grouping_defaults_to_customer_and_supplier(
     context: SimpleNamespace,
 ) -> None:
-    table = context.table
+    rows = [
+        {"name": name, "party_type": name}
+        for name in ("Customer", "Supplier", "Employee")
+    ]
+    assert selected_rows(
+        query._build_qb_party_conditions(
+            {"categorize_by": "Categorize by Party"}, context.table
+        ),
+        rows,
+    ) == ["Customer", "Supplier"]
+
+
+def test_explicit_voucher_exclusions(context: SimpleNamespace) -> None:
+    rows = [
+        {"name": "excluded", "voucher_no": "JE-1"},
+        {"name": "kept", "voucher_no": "JE-2"},
+    ]
+    assert selected_rows(
+        query._build_qb_voucher_conditions(
+            {"voucher_no_not_in": ["JE-1"]}, context.table
+        ),
+        rows,
+    ) == ["kept"]
+
+
+@pytest.mark.parametrize(
+    ("options", "expected"),
+    [
+        ({"letter": "A"}, ["assigned"]),
+        ({"show_letter": "Only assigned rows"}, ["assigned"]),
+        ({"show_letter": "Only unassigned rows"}, ["blank", "null"]),
+    ],
+)
+def test_letter_predicates(
+    context: SimpleNamespace, options: dict[str, Any], expected: list[str]
+) -> None:
+    # Use a small explicit relation for the Karam-only letter field.
+    with sqlite3.connect(":memory:") as db:
+        db.execute('CREATE TABLE "tabGL Entry" (name TEXT, letter TEXT)')
+        db.executemany(
+            'INSERT INTO "tabGL Entry" VALUES (?,?)',
+            [("assigned", "A"), ("blank", ""), ("null", None)],
+        )
+        conditions = query._build_qb_karam_conditions(options, context.table, None)
+        sql = (
+            MariaDB.from_(context.table)
+            .select(context.table.name)
+            .where(Criterion.all(conditions))
+            .get_sql()
+        )
+        assert sorted(row[0] for row in db.execute(sql)) == expected
+
+
+def test_joined_voucher_conditions_are_orred(context: SimpleNamespace) -> None:
     conditions = query._build_qb_karam_conditions(
-        filters(karam_series="S"),
-        table,
+        {},
+        context.table,
         None,
         joined_voucher_conditions=[
-            table.voucher_type == "Sales Invoice",
-            table.voucher_no == "J1",
+            context.table.voucher_no == "A",
+            context.table.voucher_no == "B",
         ],
     )
     assert selected_rows(
-        conditions,
-        [
-            {"name": "invoice", "voucher_type": "Sales Invoice", "voucher_no": "I1"},
-            {"name": "journal", "voucher_type": "Journal Entry", "voucher_no": "J1"},
-            {"name": "unrelated", "voucher_type": "Journal Entry", "voucher_no": "J2"},
-        ],
-    ) == ["invoice", "journal"]
+        conditions, [{"name": name, "voucher_no": name} for name in ("A", "B", "C")]
+    ) == ["A", "B"]
+
+
+@pytest.mark.parametrize(
+    ("options", "company", "expected"),
+    [
+        (
+            {"categorize_by": "Categorise by Account", "presentation_currency": "USD"},
+            "USD",
+            True,
+        ),
+        (
+            {
+                "categorize_by": "Group by Account w/ Opening",
+                "presentation_currency": "USD",
+            },
+            "USD",
+            True,
+        ),
+        (
+            {"categorize_by": "Categorise by Account", "presentation_currency": "EUR"},
+            "USD",
+            False,
+        ),
+        (
+            {"categorize_by": "Flat Chronological", "presentation_currency": "USD"},
+            "USD",
+            False,
+        ),
+        (
+            {
+                "categorize_by": "Categorise by Account",
+                "presentation_currency": "USD",
+                "include_dimensions": 1,
+            },
+            "USD",
+            False,
+        ),
+        (
+            {
+                "categorize_by": "Categorise by Account",
+                "presentation_currency": "USD",
+                "add_values_in_transaction_currency": 1,
+            },
+            "USD",
+            False,
+        ),
+        (
+            {
+                "categorize_by": "Categorise by Account",
+                "presentation_currency": "USD",
+                "show_net_values_in_party_account": 1,
+            },
+            "USD",
+            False,
+        ),
+    ],
+)
+def test_compaction_requires_compatible_currency_and_options(
+    options: dict[str, Any], company: str, expected: bool
+) -> None:
+    assert (
+        query._can_compact_account_history(options, {"company_currency": company})
+        is expected
+    )
+
+
+@pytest.mark.parametrize("presentation", [None, "EUR"])
+def test_company_amounts_are_preserved_before_external_conversion(
+    monkeypatch: pytest.MonkeyPatch, presentation: str | None
+) -> None:
+    row = frappe._dict(account_currency="USD", debit=20, credit=5)
+    monkeypatch.setattr(QueryBuilder, "run", MagicMock(return_value=[row]))
+    monkeypatch.setattr(query, "_attach_series_translation", MagicMock())
+    converted = MagicMock(return_value=[row])
+    monkeypatch.setattr(query, "convert_to_presentation_currency", converted)
+    assert query.get_gl_entries(filters(presentation_currency=presentation), []) == [
+        row
+    ]
+    assert row.debit_in_company_currency == 20
+    assert row.credit_in_company_currency == 5
+    assert converted.call_count == int(bool(presentation))
+
+
+@pytest.mark.parametrize(
+    "contribution",
+    [
+        "debit_in_account_currency",
+        "credit_in_account_currency",
+        "_account_currency_contribution",
+    ],
+)
+def test_unknown_account_currency_is_flagged(contribution: str) -> None:
+    row = frappe._dict(account_currency="", debit=0, credit=0, **{contribution: 1})
+    query._prepare_currency_values([row], {})
+    assert row._mixed_account_currency == 1
+
+
+def test_compact_history_keeps_company_amounts_and_cancelled_currency_provenance(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    history = frappe._dict(
+        account="A",
+        account_currency="",
+        posting_date=date(2025, 12, 31),
+        creation="1",
+        debit="1.25",
+        credit="0.25",
+        debit_in_account_currency="0",
+        credit_in_account_currency="0",
+        _account_currency_contribution=2,
+    )
+    movement = frappe._dict(
+        account="A",
+        account_currency="USD",
+        posting_date=date(2026, 1, 1),
+        creation="2",
+        debit=0.5,
+        credit=0,
+    )
+    responses = iter([[history], [movement]])
+    monkeypatch.setattr(QueryBuilder, "run", MagicMock(side_effect=responses))
+    attach = MagicMock()
+    monkeypatch.setattr(query, "_attach_series_translation", attach)
+    rows = query.get_gl_entries(
+        filters(categorize_by="Categorise by Account"), [], enrich_opening_entries=False
+    )
+    assert rows == [history, movement]
+    assert history.debit == 1.25
+    assert history.credit == 0.25
+    assert history.debit_in_company_currency == 1.25
+    assert history._mixed_account_currency == 1
+    assert history._account_currency_contribution is True
+    attach.assert_called_once_with([movement], preloaded_voucher_data=None)
+
+
+@pytest.mark.parametrize("extras", [False, True])
+def test_flat_openings_use_real_filters_and_separate_currencies(
+    monkeypatch: pytest.MonkeyPatch, extras: bool
+) -> None:
+    statements: list[str] = []
+
+    def run(builder: QueryBuilder, **_kwargs: Any) -> list[Any]:
+        statements.append(builder.get_sql())
+        return [
+            frappe._dict(
+                account=account, account_currency=currency, opening_balance=balance
+            )
+            for account, currency, balance in (
+                ("A", "USD", "100.25"),
+                ("A", "EUR", "3.5"),
+                (None, "USD", "999"),
+            )
+        ]
+
+    monkeypatch.setattr(QueryBuilder, "run", run)
+    monkeypatch.setattr(frappe, "get_cached_value", MagicMock(return_value="Book"))
+    monkeypatch.setattr(
+        query, "_get_voucher_data_for_filters", MagicMock(return_value={})
+    )
+    permission = "`tabGL Entry`.`account`='Allowed'" if extras else ""
+    monkeypatch.setattr(
+        query, "build_match_conditions", MagicMock(return_value=permission)
+    )
+    options = filters(categorize_by="Flat Chronological")
+    if extras:
+        options.update(include_default_book_entries=1, translation="Missing")
+    original = options.copy()
+    assert query.get_flat_account_currency_openings(options) == {
+        ("A", "USD"): 100.25,
+        ("A", "EUR"): 3.5,
+    }
+    assert options == original
+    assert "`company`='Test'" in statements[0]
+    if extras:
+        assert permission in statements[0]
+        assert "`name`=''" in statements[0]

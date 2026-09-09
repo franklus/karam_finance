@@ -3,11 +3,12 @@
 from __future__ import annotations
 
 import importlib
-from typing import TYPE_CHECKING
-from unittest.mock import patch
+from typing import TYPE_CHECKING, override
+from unittest import TestCase
+from unittest.mock import Mock, patch
 
+import frappe
 from frappe import _dict
-from frappe.tests.utils import FrappeTestCase
 
 if TYPE_CHECKING:
     from types import ModuleType
@@ -22,8 +23,27 @@ def _load_module() -> ModuleType:
     return importlib.import_module(MODULE_NAME)
 
 
-class TestTrialBalanceForPartyReporting(FrappeTestCase):
+class TestTrialBalanceForPartyReporting(TestCase):
     """Regression tests for Trial Balance for Party (Reporting Currency)."""
+
+    @override
+    def setUp(self) -> None:
+        self.enterContext(patch.object(frappe, "db", Mock()))
+        self.enterContext(patch.object(frappe, "logger", return_value=Mock()))
+        self.enterContext(patch.object(frappe.local, "lang", "en", create=True))
+        self.enterContext(
+            patch("frappe.translate.get_all_translations", return_value={})
+        )
+
+    def test_account_columns_are_identifiers_not_amount_currencies(self) -> None:
+        module = _load_module()
+        columns = module.get_columns(_dict(party_type="Supplier"), True)
+        by_field = {column["fieldname"]: column for column in columns}
+        assert by_field["account"]["options"] == "Account"
+        assert by_field["account_currency"]["options"] == "Currency"
+        assert all(
+            by_field[field]["options"] == "currency" for field in module.VALUE_FIELDS
+        )
 
     def test_toggle_debit_credit_nets_values(self) -> None:
         """Only one side should remain after netting."""
@@ -150,12 +170,14 @@ class TestTrialBalanceForPartyReporting(FrappeTestCase):
                 data_module,
                 "get_reporting_currency_balances",
                 return_value={
-                    "CUST-002": {
-                        "opening_debit": 0.0,
-                        "opening_credit": 0.0,
-                        "debit": 5.0,
-                        "credit": 0.0,
-                    }
+                    "CUST-002": [
+                        {
+                            "opening_debit": 0.0,
+                            "opening_credit": 0.0,
+                            "debit": 5.0,
+                            "credit": 0.0,
+                        }
+                    ]
                 },
             ),
             patch.object(
@@ -234,18 +256,22 @@ class TestTrialBalanceForPartyReporting(FrappeTestCase):
                 data_module,
                 "get_reporting_currency_balances",
                 return_value={
-                    "CUST-001": {
-                        "opening_debit": 11.0,
-                        "opening_credit": 1.0,
-                        "debit": 5.0,
-                        "credit": 2.0,
-                    },
-                    "CUST-002": {
-                        "opening_debit": 3.0,
-                        "opening_credit": 0.0,
-                        "debit": 0.0,
-                        "credit": 4.0,
-                    },
+                    "CUST-001": [
+                        {
+                            "opening_debit": 11.0,
+                            "opening_credit": 1.0,
+                            "debit": 5.0,
+                            "credit": 2.0,
+                        }
+                    ],
+                    "CUST-002": [
+                        {
+                            "opening_debit": 3.0,
+                            "opening_credit": 0.0,
+                            "debit": 0.0,
+                            "credit": 4.0,
+                        }
+                    ],
                 },
             ),
             patch.object(
@@ -292,8 +318,8 @@ class TestTrialBalanceForPartyReporting(FrappeTestCase):
                 data_module,
                 "get_reporting_currency_balances",
                 return_value={
-                    "CUST-A": {"opening_debit": 100.0, "opening_credit": 0.0},
-                    "CUST-B": {"opening_debit": 0.0, "opening_credit": 100.0},
+                    "CUST-A": [{"opening_debit": 100.0, "opening_credit": 0.0}],
+                    "CUST-B": [{"opening_debit": 0.0, "opening_credit": 100.0}],
                 },
             ),
             patch.object(
@@ -315,6 +341,80 @@ class TestTrialBalanceForPartyReporting(FrappeTestCase):
         total_row = data[-1]
         assert total_row["closing_debit"] == 100.0
         assert total_row["closing_credit"] == 100.0
+
+    def test_same_party_keeps_separate_rows_for_two_eur_accounts(self) -> None:
+        """Account rows retain balances, currencies, and supplier billing currency."""
+        module = _load_module()
+        filters = _dict(
+            party_type="Supplier",
+            party="VEN-1",
+            account=None,
+            company="Karam",
+            show_zero_values=0,
+        )
+        data_module = importlib.import_module(
+            MODULE_NAME.rsplit(".", 1)[0] + ".tbfpr_data"
+        )
+        with (
+            patch.object(
+                data_module,
+                "get_reporting_currency_balances",
+                return_value={
+                    "VEN-1": [
+                        {
+                            "account": "Payable A",
+                            "account_currency": "EUR",
+                            "opening_debit": 0.0,
+                            "opening_credit": 100.0,
+                            "debit": 20.0,
+                            "credit": 5.0,
+                        },
+                        {
+                            "account": "Payable B",
+                            "account_currency": "EUR",
+                            "opening_debit": 40.0,
+                            "opening_credit": 0.0,
+                            "debit": 3.0,
+                            "credit": 10.0,
+                        },
+                    ]
+                },
+            ),
+            patch.object(
+                data_module.frappe,
+                "get_list",
+                return_value=[
+                    {
+                        "name": "VEN-1",
+                        "supplier_name": "Vendor",
+                        "default_currency": "GBP",
+                    }
+                ],
+            ),
+            patch.object(
+                data_module.frappe.db,
+                "get_single_value",
+                return_value="USD",
+            ),
+        ):
+            data = module.get_data(filters, show_party_name=True)
+
+        assert len(data) == 4
+        party_rows = data[:2]
+        assert [row["party"] for row in party_rows] == ["VEN-1", "VEN-1"]
+        assert [row["account"] for row in party_rows] == [
+            "Payable A",
+            "Payable B",
+        ]
+        assert [row["account_currency"] for row in party_rows] == ["EUR", "EUR"]
+        assert [row["currency"] for row in party_rows] == ["USD", "USD"]
+        assert [row["billing_currency"] for row in party_rows] == ["GBP", "GBP"]
+        assert party_rows[0]["closing_credit"] == 85.0
+        assert party_rows[1]["closing_debit"] == 33.0
+        assert data[-1]["debit"] == 23.0
+        assert data[-1]["credit"] == 15.0
+        assert data[-1]["closing_debit"] == 33.0
+        assert data[-1]["closing_credit"] == 85.0
 
     def test_no_parties_returns_empty_list(self) -> None:
         """No party master records should return no report rows."""
@@ -374,7 +474,7 @@ class TestTrialBalanceForPartyReporting(FrappeTestCase):
             patch.object(
                 data_module,
                 "get_reporting_currency_balances",
-                return_value={party["name"]: {"debit": 1} for party in parties},
+                return_value={party["name"]: [{"debit": 1}] for party in parties},
             ),
             patch.object(
                 data_module.frappe,

@@ -776,13 +776,6 @@ def _create_doe_records(  # noqa: PLR0913, PLR0917
         )
         profit_loss_currency_map[profit_loss_acct] = profit_loss_currency
 
-    # Generate voucher_no for DOE pair identification (e.g. DOE-2017-40110020001)
-    doe_year = _required_doe_date(doe_posting_date).year
-    account_number = (
-        frappe.db.get_value("Account", account, "account_number") or account
-    )
-    voucher_no = f"DOE-{doe_year}-{account_number}"
-
     # Generate names using counter
     name_1 = _generate_doe_name_from_counter(doe_posting_date, name_counter)
     name_2 = _generate_doe_name_from_counter(doe_posting_date, name_counter)
@@ -795,7 +788,7 @@ def _create_doe_records(  # noqa: PLR0913, PLR0917
         "posting_date": doe_posting_date,
         "fiscal_year": fiscal_year,
         "voucher_type": "Exchange Rate Revaluation",
-        "voucher_no": voucher_no,
+        "voucher_no": name_1,
         "reporting_currency": reporting_currency,
         "company": company,
         "party": party,
@@ -831,7 +824,9 @@ def _create_doe_records(  # noqa: PLR0913, PLR0917
         **common_fields,
         "name": name_2,
         "account": account_2,
-        "against": against_2,
+        "party": None,
+        "party_type": None,
+        "against": party or against_2,
         "account_currency": profit_loss_currency,
         "reporting_debit": reporting_debit_2,
         "reporting_credit": reporting_credit_2,
@@ -866,7 +861,7 @@ def _get_starting_doe_number(posting_date: str | date) -> dict[str, int]:
         parts = last_name[0][0].split("-")
         if len(parts) >= DOE_NAME_MIN_PARTS:
             try:
-                last_number = int(parts[3])
+                last_number = int(parts[-1])
                 next_number = last_number + 1
             except ValueError, IndexError:
                 next_number = 1

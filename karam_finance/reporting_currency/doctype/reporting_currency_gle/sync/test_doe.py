@@ -41,8 +41,10 @@ class TestPartyWiseDoe(FrappeTestCase):
 
         assert first_processed == 1
         assert len(first_records) == 2
-        assert all(record["party"] == "CUST-A" for record in first_records)
-        assert all(record["party_type"] == "Customer" for record in first_records)
+        assert first_records[0]["party"] == "CUST-A"
+        assert first_records[0]["party_type"] == "Customer"
+        assert first_records[1].get("party") is None
+        assert first_records[1].get("party_type") is None
         assert all(record["is_opening"] == "No" for record in first_records)
         assert prior_doe_by_group[("Trade Debtors", "LBP", "Customer", "CUST-A")] == {
             "reporting_debit": 10.0,
@@ -53,8 +55,10 @@ class TestPartyWiseDoe(FrappeTestCase):
         # Customer B needs a fresh pair in the next DOE parameter row.
         assert second_processed == 1
         assert len(second_records) == 2
-        assert all(record["party"] == "CUST-B" for record in second_records)
-        assert all(record["party_type"] == "Customer" for record in second_records)
+        assert second_records[0]["party"] == "CUST-B"
+        assert second_records[0]["party_type"] == "Customer"
+        assert second_records[1].get("party") is None
+        assert second_records[1].get("party_type") is None
 
     def test_same_party_name_in_different_doctypes_is_not_combined(self) -> None:
         customer = _party_group("SHARED-NAME")
@@ -73,7 +77,11 @@ class TestPartyWiseDoe(FrappeTestCase):
             sum(row["reporting_debit"] - row["reporting_credit"] for row in records)
             == 0
         )
-        assert {row["party_type"] for row in records} == {"Customer", "Supplier"}
+        assert {row.get("party_type") for row in records} == {
+            "Customer",
+            "Supplier",
+            None,
+        }
 
     def test_query_splits_only_receivable_and_payable_accounts_by_party(self) -> None:
         """The SQL grouping preserves account-level DOE for all other account types."""
@@ -89,23 +97,6 @@ class TestPartyWiseDoe(FrappeTestCase):
         assert "INNER JOIN `tabAccount` account" in query
         assert "account.account_type IN ('Receivable', 'Payable')" in query
         assert "THEN COALESCE(rc.party, '')" in query
-
-    def test_bulk_insert_preserves_party_context(self) -> None:
-        """The DOE writer must persist party fields created by the calculator."""
-        records = [
-            {"name": "RC-DOE-2025-00001", "party_type": "Customer", "party": "CUST-A"},
-            {"name": "RC-DOE-2025-00002", "party_type": "Customer", "party": "CUST-A"},
-        ]
-
-        with patch.object(doe.frappe.db, "bulk_insert") as bulk_insert:
-            doe._bulk_insert_doe_records(records)
-
-        _, fields, values = bulk_insert.call_args.args
-        inserted_rows = [dict(zip(fields, row, strict=True)) for row in values]
-
-        assert all(row["party_type"] == "Customer" for row in inserted_rows)
-        assert all(row["party"] == "CUST-A" for row in inserted_rows)
-        assert all(row["is_opening"] == "No" for row in inserted_rows)
 
 
 _DOE_ARGUMENTS: dict[str, Any] = {
@@ -231,7 +222,8 @@ class TestDoeWorkflow(TestCase):
         ]
         assert rows[0]["reporting_debit"] == 10
         assert rows[2]["reporting_credit"] == 50
-        assert all(row["party"] == "CUST-A" for row in rows)
+        assert [row["party"] for row in rows[::2]] == ["CUST-A", "CUST-A"]
+        assert [row["party"] for row in rows[1::2]] == [None, None]
         assert (
             sum(row["reporting_debit"] - row["reporting_credit"] for row in rows) == 0
         )

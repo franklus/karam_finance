@@ -182,16 +182,27 @@ def _process_merge_group(key: _MergeKey, gl_rows: list[_GLRow]) -> int:
             "voucher_detail_no": ["in", jea_names],
             "is_cancelled": 0,
         },
-        fields=["name"],
-        limit=1,
+        fields=["name", "voucher_detail_no"],
+        limit=len(jea_names) + 1,
     )
     if already_split:
+        existing_children = {
+            row.get("voucher_detail_no")
+            for row in already_split
+            if row.get("voucher_detail_no")
+        }
+        if existing_children != set(jea_names) or len(already_split) != len(jea_names):
+            frappe.log_error(
+                f"Incomplete GL split for {key[0]}",
+                "GL split retained originals",
+            )
+            return 0
         _delete_merged_rows(gl_rows)
         return len(gl_rows)
 
-    # Multiple JEA rows → split from the first GL entry only,
-    # delete the rest (they are redundant merged copies).
-    _split_single_gl_entry(gl_rows[0], jea_rows)
+    # Delete redundant originals only after the source original was split successfully.
+    if not _split_single_gl_entry(gl_rows[0], jea_rows):
+        return 0
     _delete_merged_rows(gl_rows[1:])
     return len(gl_rows)
 
@@ -219,7 +230,7 @@ def _delete_merged_rows(rows: list[_GLRow]) -> None:
 def _split_single_gl_entry(
     gl_row: _GLRow,
     jea_rows: list[_GLRow],
-) -> None:
+) -> bool:
     """Replace one merged GL entry with individual entries per JEA row.
 
     Uses a savepoint so that a failed delete rolls back the inserts,
@@ -232,7 +243,7 @@ def _split_single_gl_entry(
         as_dict=True,
     )
     if not original:
-        return
+        return False
 
     gl_name = gl_row["name"]
     savepoint = f"split_gl_{gl_name.replace('-', '_')}"
@@ -249,6 +260,8 @@ def _split_single_gl_entry(
             frappe.get_traceback(),
             f"GL split failed for {gl_name}",
         )
+        return False
+    return True
 
 
 def _insert_split_entry(original: _GLRow, jea: _GLRow) -> None:

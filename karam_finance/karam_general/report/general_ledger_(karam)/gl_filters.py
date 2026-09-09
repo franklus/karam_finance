@@ -8,6 +8,7 @@ import frappe
 from erpnext.accounts.utils import get_account_currency
 from frappe import _
 from frappe.query_builder import Criterion
+from frappe.utils import getdate
 
 
 def validate_filters(
@@ -27,12 +28,16 @@ def _validate_required_dates(filters: Any) -> None:
     if not filters.get("company"):
         frappe.throw(_("{0} is mandatory").format(_("Company")))
 
-    if not filters.get("from_date") and not filters.get("to_date"):
-        frappe.throw(
-            _("{0} and {1} are mandatory").format(
-                frappe.bold(_("From Date")), frappe.bold(_("To Date"))
-            )
-        )
+    for field in ("from_date", "to_date"):
+        value = filters.get(field)
+        if not value:
+            frappe.throw(_("{0} is mandatory").format(field.replace("_", " ").title()))
+        try:
+            filters[field] = getdate(value)
+        except TypeError, ValueError:
+            filters[field] = None
+        if filters[field] is None:
+            frappe.throw(_("Invalid date for {0}").format(field))
 
     if filters.from_date > filters.to_date:
         frappe.throw(_("From Date must be before To Date"))

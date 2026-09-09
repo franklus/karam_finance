@@ -48,36 +48,17 @@ def get_data(filters: Any, show_party_name: Any) -> list[dict[str, Any]]:
 
     for party in chain((first_party,), parties):
         party_name = party.get("name")
-        balances = party_balances.get(party_name, {})
-
-        opening_debit, opening_credit = toggle_debit_credit(
-            flt(balances.get("opening_debit", 0)),
-            flt(balances.get("opening_credit", 0)),
-        )
-        debit = flt(balances.get("debit", 0))
-        credit = flt(balances.get("credit", 0))
-        closing_debit, closing_credit = toggle_debit_credit(
-            opening_debit + debit,
-            opening_credit + credit,
-        )
-
-        row = {
-            "party": party_name,
-            "opening_debit": opening_debit,
-            "opening_credit": opening_credit,
-            "debit": debit,
-            "credit": credit,
-            "closing_debit": closing_debit,
-            "closing_credit": closing_credit,
-            "currency": reporting_currency,
-        }
-
-        if show_party_name:
-            row["party_name"] = party.get(party_name_field)
-
-        _append_party_if_visible(
-            data, total_row, row, show_zero_values=cint(filters.show_zero_values)
-        )
+        for row in _party_rows(
+            party,
+            party_balances.get(party_name, []),
+            reporting_currency,
+            party_type=filters.party_type,
+        ):
+            if show_party_name:
+                row["party_name"] = party.get(party_name_field)
+            _append_party_if_visible(
+                data, total_row, row, show_zero_values=cint(filters.show_zero_values)
+            )
 
     return _append_totals(data, reporting_currency, total_row)
 
@@ -95,7 +76,12 @@ def _iter_permitted_parties(filters: Any, party_name_field: str) -> Iterator[Any
         # nosemgrep: frappe-n-plus-one-read-in-loop
         page = frappe.get_list(
             filters.party_type,
-            fields=["name", party_name_field],
+            fields=["name", party_name_field]
+            + (
+                ["default_currency"]
+                if filters.party_type in ("Customer", "Supplier")
+                else []
+            ),
             filters=dict(party_filters),
             order_by="name asc",
             limit_page_length=PARTY_PAGE_SIZE,
@@ -147,3 +133,43 @@ def _append_party_if_visible(
         data.append(row)
         for field in TOTAL_FIELDS:
             total_row[field] += row[field]
+
+
+def _build_account_row(
+    party: str, balances: dict[str, Any], reporting_currency: Any
+) -> dict[str, Any]:
+    opening_debit, opening_credit = toggle_debit_credit(
+        flt(balances.get("opening_debit", 0)), flt(balances.get("opening_credit", 0))
+    )
+    debit, credit = flt(balances.get("debit", 0)), flt(balances.get("credit", 0))
+    closing_debit, closing_credit = toggle_debit_credit(
+        opening_debit + debit, opening_credit + credit
+    )
+    return {
+        "party": party,
+        "account": balances.get("account"),
+        "account_currency": balances.get("account_currency"),
+        "opening_debit": opening_debit,
+        "opening_credit": opening_credit,
+        "debit": debit,
+        "credit": credit,
+        "closing_debit": closing_debit,
+        "closing_credit": closing_credit,
+        "currency": reporting_currency,
+    }
+
+
+def _party_rows(
+    party: Any,
+    balances: list[dict[str, Any]],
+    reporting_currency: Any,
+    *,
+    party_type: str,
+) -> Iterator[dict[str, Any]]:
+    for account_balances in balances or [{}]:
+        row = _build_account_row(
+            party.get("name"), account_balances, reporting_currency
+        )
+        if party_type in ("Customer", "Supplier"):
+            row["billing_currency"] = party.get("default_currency")
+        yield row

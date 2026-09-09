@@ -118,6 +118,19 @@ class TestSchemaCapacity(TestCase):
         assert values[0][0] == missing["name"]
         self.mock_frappe.db.commit.assert_called_once()
 
+    def test_property_setters_skip_empty_insert_and_update_batches(self) -> None:
+        """Matching settings commit without issuing empty bulk mutations."""
+        self.mock_frappe.get_all.return_value = [
+            {"name": target["name"], "value": target["value"]}
+            for target in db_schema._get_property_setter_targets()
+        ]
+
+        db_schema._ensure_property_setters()
+
+        self.mock_frappe.db.bulk_insert.assert_not_called()
+        self.mock_frappe.db.bulk_update.assert_not_called()
+        self.mock_frappe.db.commit.assert_called_once_with()
+
     def test_nullable_column_is_cleaned_and_committed_before_alter(self) -> None:
         rows = [
             _dict(column_name="debit", column_type="decimal(30,4)", is_nullable="YES"),
