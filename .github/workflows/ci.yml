@@ -2,7 +2,7 @@ name: Karam Finance CI
 
 on:
   push:
-    branches: [develop]
+    branches: [version-16]
   pull_request:
   workflow_dispatch:
   workflow_call:
@@ -128,11 +128,47 @@ jobs:
           ../env/bin/python -m coverage run --append -m pytest -q
           ../apps/karam_finance/karam_finance/karam_general/tests/test_schema_integrity.py
           ../apps/karam_finance/karam_finance/karam_general/tests/test_trial_balance_report.py
+          ../apps/karam_finance/karam_finance/karam_general/tests/test_karam_gl_query_contracts.py
+          ../apps/karam_finance/karam_finance/karam_general/tests/test_gl_enrichment_contracts.py
+          ../apps/karam_finance/karam_finance/karam_general/tests/test_gl_filter_contracts.py
+          ../apps/karam_finance/karam_finance/karam_general/tests/test_gl_aggregation_contracts.py
+          ../apps/karam_finance/karam_finance/karam_general/tests/test_gl_execution_contracts.py
+          ../apps/karam_finance/karam_finance/karam_general/tests/test_gl_currency_context_contracts.py
+          ../apps/karam_finance/karam_finance/karam_general/tests/test_pnlcc_contracts.py
+          ../apps/karam_finance/karam_finance/karam_general/tests/test_brs_contracts.py
+          ../apps/karam_finance/karam_finance/karam_general/tests/test_bank_clearance_contracts.py
+          ../apps/karam_finance/karam_finance/karam_general/tests/test_asset_depreciation_contracts.py
+          ../apps/karam_finance/karam_finance/karam_general/tests/test_item_price_helper_contracts.py
+          ../apps/karam_finance/karam_finance/karam_general/tests/test_tbk_contracts.py
+          ../apps/karam_finance/karam_finance/karam_general/tests/test_tbfp_contracts.py
+          ../apps/karam_finance/karam_finance/reporting_currency/tests/test_reporting_gl_query_contracts.py
+          ../apps/karam_finance/karam_finance/reporting_currency/tests/test_party_reporting_query.py
+          ../apps/karam_finance/karam_finance/reporting_currency/tests/test_trial_balance_for_party_reporting.py
+          ../apps/karam_finance/karam_finance/reporting_currency/tests/test_reporting_tb_contracts.py
+          ../apps/karam_finance/karam_finance/reporting_currency/tests/test_reporting_tb_filter_row_contracts.py
+          ../apps/karam_finance/karam_finance/reporting_currency/tests/test_reporting_tbfp_contracts.py
+          ../apps/karam_finance/karam_finance/reporting_currency/doctype/reporting_currency_gle/sync/test_doe_party_port.py
+          ../apps/karam_finance/karam_finance/reporting_currency/doctype/reporting_currency_gle/sync/test_doe_metadata_repair.py
+          ../apps/karam_finance/karam_finance/reporting_currency/doctype/reporting_currency_gle/sync/test_sync_contracts.py
+          ../apps/karam_finance/karam_finance/reporting_currency/doctype/reporting_currency_gle/sync/test_sync_support_contracts.py
+          ../apps/karam_finance/karam_finance/reporting_currency/doctype/reporting_currency_gle/sync/test_doe_support_contracts.py
+          ../apps/karam_finance/karam_finance/common/tests/test_common_contracts.py
+          ../apps/karam_finance/karam_finance/common/tests/test_tiny_controller_contracts.py
+          ../apps/karam_finance/karam_finance/patches/test_fix_merged_gl_entries.py
+          ../apps/karam_finance/karam_finance/patches/test_delete_stale_general_ledger_reporting_currency_report.py
+          ../apps/karam_finance/karam_finance/patches/test_delete_stale_trial_balance_reporting_report.py
+          ../apps/karam_finance/karam_finance/patches/test_disable_general_ledger_karam_auto_total.py
+          ../apps/karam_finance/karam_finance/tests/test_migrate_contracts.py
           ../apps/karam_finance/karam_finance/karam_series/tests/test_hooks.py
           ../apps/karam_finance/karam_finance/karam_series/tests/test_doctype_list_sync.py
+          ../apps/karam_finance/karam_finance/karam_series/tests/test_settings_and_custom_fields.py
+          ../apps/karam_finance/karam_finance/karam_series/tests/test_controllers.py
           ../apps/karam_finance/karam_finance/letter_reconciliation/doctype/letter_reconciliation/test_letter_row_links.py
           ../apps/karam_finance/karam_finance/letter_reconciliation/doctype/letter_reconciliation/test_reconciliation_contracts.py
           ../apps/karam_finance/karam_finance/letter_reconciliation/doctype/letter_reconciliation_settings/test_rebuild_contracts.py
+          ../apps/karam_finance/karam_finance/letter_reconciliation/tests/test_doc_event_contracts.py
+          ../apps/karam_finance/karam_finance/letter_reconciliation/tests/test_lettering_contracts.py
+          ../apps/karam_finance/karam_finance/letter_reconciliation/tests/test_rebuild_support_contracts.py
 
       - name: Enforce separate line and branch coverage thresholds
         if: ${{ !cancelled() && steps.dependencies.outcome == 'success' }}

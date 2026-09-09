@@ -1,9 +1,4 @@
-"""Trial Balance for Party (Reporting Currency) report.
-
-Mirrors ERPNext vanilla Trial Balance for Party row semantics, but values are
-taken from Reporting Currency GLE and the hidden currency is the configured
-reporting currency.
-"""
+"""Trial Balance for Party (Reporting Currency) report by party account."""
 
 # N999: Module name contains parentheses (Frappe report naming convention)
 

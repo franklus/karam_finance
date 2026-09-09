@@ -338,3 +338,187 @@ def test_enqueue_failure_releases_created_run_state(
         call(jobs._get_rebuild_state_key("run")),
     ]
     database.commit.assert_not_called()
+
+
+def _merge_key() -> legacy._MergeKey:
+    return ("JV-1", "Cash", "", "", "")
+
+
+def _merged_originals() -> list[legacy._GLRow]:
+    return [{"name": "GL-1"}, {"name": "GL-2"}]
+
+
+def _split_children() -> list[legacy._GLRow]:
+    return [{"name": "JEA-1"}, {"name": "JEA-2"}]
+
+
+def _assert_split_lookup(get_all: MagicMock) -> None:
+    get_all.assert_called_once_with(
+        "GL Entry",
+        filters={
+            "voucher_no": "JV-1",
+            "voucher_detail_no": ["in", ["JEA-1", "JEA-2"]],
+            "is_cancelled": 0,
+        },
+        fields=["name", "voucher_detail_no"],
+        limit=3,
+    )
+
+
+@pytest.mark.parametrize(
+    "existing_children",
+    [
+        [{"name": "split-1", "voucher_detail_no": "JEA-1"}],
+        [
+            {"name": "split-1", "voucher_detail_no": "JEA-1"},
+            {"name": "split-2", "voucher_detail_no": "JEA-1"},
+        ],
+    ],
+)
+def test_legacy_split_retains_originals_for_partial_or_duplicate_children(
+    existing_children: list[legacy._GLRow],
+) -> None:
+    with (
+        patch.object(legacy, "_matching_jea_rows", return_value=_split_children()),
+        patch.object(
+            legacy.frappe, "get_all", return_value=existing_children
+        ) as get_all,
+        patch.object(legacy.frappe, "log_error"),
+        patch.object(legacy, "_delete_merged_rows") as delete,
+    ):
+        assert legacy._process_merge_group(_merge_key(), _merged_originals()) == 0
+
+    delete.assert_not_called()
+    _assert_split_lookup(get_all)
+
+
+def test_legacy_split_accepts_complete_existing_children() -> None:
+    existing_children = [
+        {"name": "split-1", "voucher_detail_no": "JEA-1"},
+        {"name": "split-2", "voucher_detail_no": "JEA-2"},
+    ]
+    originals = _merged_originals()
+    with (
+        patch.object(legacy, "_matching_jea_rows", return_value=_split_children()),
+        patch.object(
+            legacy.frappe, "get_all", return_value=existing_children
+        ) as get_all,
+        patch.object(legacy.frappe, "log_error"),
+        patch.object(legacy, "_delete_merged_rows") as delete,
+    ):
+        assert legacy._process_merge_group(_merge_key(), originals) == 2
+
+    delete.assert_called_once_with(originals)
+    _assert_split_lookup(get_all)
+
+
+def test_legacy_split_failure_keeps_every_original() -> None:
+    database = MagicMock()
+    database.get_value.return_value = {"name": "GL-1", "debit": 10, "credit": 0}
+    inserted = MagicMock(side_effect=RuntimeError("insert"))
+    replacement = MagicMock(flags=MagicMock())
+    replacement.set = MagicMock()
+    replacement.insert = inserted
+
+    with (
+        patch.object(legacy.frappe, "db", database),
+        patch.object(legacy.frappe, "new_doc", return_value=replacement),
+        patch.object(legacy.frappe, "get_all", return_value=[]),
+        patch.object(legacy, "_matching_jea_rows", return_value=_split_children()),
+        patch.object(legacy.frappe, "get_traceback", return_value="trace"),
+        patch.object(legacy.frappe, "log_error"),
+        patch.object(legacy, "_delete_merged_rows") as delete,
+    ):
+        assert legacy._process_merge_group(_merge_key(), _merged_originals()) == 0
+
+    database.rollback.assert_called_once_with(save_point="split_gl_GL_1")
+    delete.assert_not_called()
+
+
+def test_legacy_split_deletes_extras_only_after_replacement_original() -> None:
+    database = MagicMock()
+    database.get_value.return_value = {"name": "GL-1", "debit": 10, "credit": 0}
+    replacement = MagicMock(flags=MagicMock())
+    replacement.set = MagicMock()
+    replacement.insert = MagicMock()
+
+    def delete_extras(_rows: list[legacy._GLRow]) -> None:
+        assert database.delete.call_args_list == [call("GL Entry", {"name": "GL-1"})]
+
+    with (
+        patch.object(legacy.frappe, "db", database),
+        patch.object(legacy.frappe, "new_doc", return_value=replacement),
+        patch.object(legacy.frappe, "get_all", return_value=[]),
+        patch.object(legacy, "_matching_jea_rows", return_value=_split_children()),
+        patch.object(
+            legacy, "_delete_merged_rows", side_effect=delete_extras
+        ) as delete,
+    ):
+        assert legacy._process_merge_group(_merge_key(), _merged_originals()) == 2
+
+    delete.assert_called_once_with([{"name": "GL-2"}])
+
+
+@pytest.mark.parametrize(
+    "existing_children",
+    [
+        [
+            {"name": "split-1", "voucher_detail_no": "JEA-1"},
+            {"name": "split-2", "voucher_detail_no": None},
+        ],
+        [
+            {"name": "split-1", "voucher_detail_no": "JEA-1"},
+            {"name": "split-2", "voucher_detail_no": "unexpected"},
+        ],
+    ],
+)
+def test_legacy_split_retains_originals_for_malformed_child_metadata(
+    existing_children: list[legacy._GLRow],
+) -> None:
+    with (
+        patch.object(legacy, "_matching_jea_rows", return_value=_split_children()),
+        patch.object(legacy.frappe, "get_all", return_value=existing_children),
+        patch.object(legacy.frappe, "log_error"),
+        patch.object(legacy, "_delete_merged_rows") as delete,
+    ):
+        assert legacy._process_merge_group(_merge_key(), _merged_originals()) == 0
+
+    delete.assert_not_called()
+
+
+def test_legacy_split_reports_missing_original_and_keeps_extras() -> None:
+    database = MagicMock()
+    database.get_value.return_value = None
+
+    with (
+        patch.object(legacy.frappe, "db", database),
+        patch.object(legacy.frappe, "get_all", return_value=[]),
+        patch.object(legacy, "_matching_jea_rows", return_value=_split_children()),
+        patch.object(legacy, "_delete_merged_rows") as delete,
+    ):
+        assert legacy._process_merge_group(_merge_key(), _merged_originals()) == 0
+
+    delete.assert_not_called()
+
+
+def test_legacy_split_rolls_back_original_delete_failure_and_keeps_extras() -> None:
+    database = MagicMock()
+    database.get_value.return_value = {"name": "GL-1", "debit": 10, "credit": 0}
+    database.delete.side_effect = RuntimeError("delete")
+    replacement = MagicMock(flags=MagicMock())
+    replacement.set = MagicMock()
+    replacement.insert = MagicMock()
+
+    with (
+        patch.object(legacy.frappe, "db", database),
+        patch.object(legacy.frappe, "new_doc", return_value=replacement),
+        patch.object(legacy.frappe, "get_all", return_value=[]),
+        patch.object(legacy, "_matching_jea_rows", return_value=_split_children()),
+        patch.object(legacy.frappe, "get_traceback", return_value="trace"),
+        patch.object(legacy.frappe, "log_error"),
+        patch.object(legacy, "_delete_merged_rows") as delete,
+    ):
+        assert legacy._process_merge_group(_merge_key(), _merged_originals()) == 0
+
+    database.rollback.assert_called_once_with(save_point="split_gl_GL_1")
+    delete.assert_not_called()

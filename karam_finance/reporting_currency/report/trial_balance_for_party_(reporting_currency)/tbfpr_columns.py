@@ -15,6 +15,20 @@ def get_columns(filters: Any, show_party_name: Any) -> Any:
             "width": 200,
         },
         {
+            "fieldname": "account",
+            "label": _("Account"),
+            "fieldtype": "Link",
+            "options": "Account",
+            "width": 300,
+        },
+        {
+            "fieldname": "account_currency",
+            "label": _("Account Currency"),
+            "fieldtype": "Link",
+            "options": "Currency",
+            "width": 100,
+        },
+        {
             "fieldname": "opening_debit",
             "label": _("Opening (Dr)"),
             "fieldtype": "Currency",
@@ -64,6 +78,18 @@ def get_columns(filters: Any, show_party_name: Any) -> Any:
             "hidden": 1,
         },
     ]
+
+    if filters.party_type in ("Customer", "Supplier"):
+        columns.insert(
+            3,
+            {
+                "fieldname": "billing_currency",
+                "label": _("Billing Currency"),
+                "fieldtype": "Link",
+                "options": "Currency",
+                "width": 180,
+            },
+        )
 
     if show_party_name:
         columns.insert(

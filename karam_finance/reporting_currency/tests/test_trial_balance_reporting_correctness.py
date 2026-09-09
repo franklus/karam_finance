@@ -91,7 +91,7 @@ class TestReportingTrialBalanceCorrectness(TestCase):
             from_date="2026-01-01",
             to_date="2026-12-31",
             show_unclosed_fy_pl_balances=1,
-            with_period_closing_entry_for_opening=1,
+            with_period_closing_entry_for_opening=0,
         )
         with (
             patch.object(data, "apply_gl_filters", side_effect=identity_query),
@@ -99,6 +99,36 @@ class TestReportingTrialBalanceCorrectness(TestCase):
         ):
             data._get_gl_opening_currency_rows(f, 0)
         self.assertIn("`posting_date`<='2026-12-31'", captured[0])
+        self.assertIn("CONCAT(SUM", captured[0])
+        self.assertIn("`voucher_type` IS NULL", captured[0])
+        self.assertIn("`voucher_type`<>'Period Closing Voucher'", captured[0])
+
+    def test_opening_slice_keeps_normal_entries_and_decimal_company_sums(self) -> None:
+        captured: list[str] = []
+
+        def capture(query: Any, *_args: Any, **_kwargs: Any) -> list[Any]:
+            captured.append(str(query))
+            return []
+
+        builder = type(frappe.qb.from_(frappe.qb.DocType("Reporting Currency GLE")))
+        f = frappe._dict(
+            company="Example",
+            from_date="2026-01-01",
+            to_date="2026-12-31",
+            show_unclosed_fy_pl_balances=1,
+            with_period_closing_entry_for_opening=0,
+        )
+        with (
+            patch.object(data, "apply_gl_filters", side_effect=identity_query),
+            patch.object(builder, "run", capture),
+        ):
+            data._get_gl_opening_currency_rows(f, 0, start_date="2025-01-01")
+        self.assertIn("`posting_date`<='2026-12-31'", captured[0])
+        self.assertIn("`posting_date`>='2025-01-01'", captured[0])
+        self.assertIn("`posting_date`<'2026-01-01'", captured[0])
+        self.assertIn("`is_opening` IS NULL", captured[0])
+        self.assertIn("`is_opening`='No'", captured[0])
+        # ``sum_amount`` serialises the stored numeric totals for Decimal recovery.
         self.assertIn("CONCAT(SUM", captured[0])
 
 

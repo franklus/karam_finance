@@ -11,12 +11,9 @@ from .tbfpr_constants import DOCTYPE_RC_GLE
 
 
 def get_reporting_currency_balances(filters: Any, account_filter: Any = None) -> Any:
-    """Return reporting-currency balances per party from RC GLE.
-
-    Returns nested dict: {party: {"opening_debit", "opening_credit",
-    "debit", "credit"}}
-    """
+    """Return reporting-currency balances per party and account from RC GLE."""
     rcgle = frappe.qb.DocType(DOCTYPE_RC_GLE)
+    account = frappe.qb.DocType("Account")
 
     opening_debit = Sum(
         _opening_case(rcgle, filters, rcgle.reporting_debit)  # pyright: ignore[reportArgumentType]
@@ -33,8 +30,12 @@ def get_reporting_currency_balances(filters: Any, account_filter: Any = None) ->
 
     query = (
         frappe.qb.from_(rcgle)
+        .inner_join(account)
+        .on(account.name == rcgle.account)
         .select(
             rcgle.party,
+            rcgle.account,
+            account.account_currency,
             opening_debit,
             opening_credit,
             period_debit,
@@ -45,21 +46,27 @@ def get_reporting_currency_balances(filters: Any, account_filter: Any = None) ->
             & (rcgle.is_cancelled == 0)
             & (rcgle.party_type == filters.party_type)
             & (rcgle.party != "")
+            & (rcgle.posting_date <= filters.to_date)
         )
-        .groupby(rcgle.party)
+        .groupby(rcgle.party, rcgle.account, account.account_currency)
+        .orderby(rcgle.party, rcgle.account)
     )
 
     query = _apply_common_filters(query, rcgle, filters, account_filter=account_filter)
     query = _apply_source_permissions(query, rcgle, filters)
 
-    results = {}
+    results: dict[str, list[dict[str, Any]]] = {}
     for row in query.run(as_dict=True):
-        results[row.party] = {
-            "opening_debit": flt(row.opening_debit),
-            "opening_credit": flt(row.opening_credit),
-            "debit": flt(row.debit),
-            "credit": flt(row.credit),
-        }
+        results.setdefault(row.party, []).append(
+            {
+                "account": row.account,
+                "account_currency": row.account_currency,
+                "opening_debit": flt(row.opening_debit),
+                "opening_credit": flt(row.opening_credit),
+                "debit": flt(row.debit),
+                "credit": flt(row.credit),
+            }
+        )
     return results
 
 

@@ -5,11 +5,19 @@ from typing import Any
 import frappe
 from frappe.utils import flt, now
 
+from .doe_naming import assign_doe_record_names
+
 DOCTYPE_RC_GLE = "Reporting Currency GLE"
 
 
 def bulk_insert_doe_records(records: list[dict[str, Any]]) -> None:
     """Bulk insert DOE records into RC GLE table."""
+    assign_doe_record_names(records)
+    final_primary_names: dict[str, str] = {}
+    for record in records:
+        final_primary_names.setdefault(record.get("voucher_no", ""), record["name"])
+    for record in records:
+        record["voucher_no"] = final_primary_names[record.get("voucher_no", "")]
     # Define fields to insert (excluding 'doctype' as it's a meta field)
     fields = [
         "name",

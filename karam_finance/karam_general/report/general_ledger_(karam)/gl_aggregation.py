@@ -186,6 +186,8 @@ def _consolidated_key(
 ) -> tuple[str | date | None, ...]:
     """Build a composite key for voucher-consolidated grouping."""
     fields = [
+        "account_currency",
+        "transaction_currency",
         "posting_date",
         "voucher_type",
         "voucher_no",

@@ -107,7 +107,7 @@ class TestTrialBalanceForPartyPermissions(FrappeTestCase):
             patch.object(
                 data_module,
                 "get_reporting_currency_balances",
-                return_value={"CUST-001": {"debit": 100.0}},
+                return_value={"CUST-001": [{"debit": 100.0}]},
             ),
             patch.object(
                 data_module.frappe,
