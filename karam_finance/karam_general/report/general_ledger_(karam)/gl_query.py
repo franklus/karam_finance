@@ -29,6 +29,11 @@ from frappe.utils import cstr, flt, getdate
 from pypika.queries import QueryBuilder, Table
 from pypika.terms import Term
 
+from karam_finance.common.voucher_exclusions import (
+    JOURNAL_EXCLUSION_SQL,
+    exclude_journal_entries,
+)
+
 from .gl_aggregation import _is_opening_entry, _is_report_entry
 from .gl_enrichment import (
     _attach_series_translation,
@@ -344,7 +349,7 @@ def _build_qb_voucher_conditions(filters: dict[str, Any], gl: Table) -> list[Ter
         conditions.append(gl.against_voucher == filters["against_voucher_no"])
     voucher_no_not_in = _get_voucher_no_not_in_query(filters)
     if voucher_no_not_in is not None:
-        conditions.append(~gl.voucher_no.isin(voucher_no_not_in))
+        conditions.append(exclude_journal_entries(gl, voucher_no_not_in))
     elif filters.get("voucher_no_not_in"):
         conditions.append(~gl.voucher_no.isin(filters["voucher_no_not_in"]))
     return conditions
@@ -600,7 +605,11 @@ def _build_voucher_conditions(filters: dict[str, Any]) -> list[str]:
     if filters.get("ignore_err") or filters.get("ignore_cr_dr_notes"):
         _populate_excluded_vouchers(filters)
     if filters.get("voucher_no_not_in"):
-        conditions.append("gl.voucher_no not in %(voucher_no_not_in)s")
+        conditions.append(
+            JOURNAL_EXCLUSION_SQL
+            if filters.get("ignore_err") or filters.get("ignore_cr_dr_notes")
+            else "gl.voucher_no not in %(voucher_no_not_in)s"
+        )
     return conditions
 
 

@@ -3,9 +3,10 @@
 from __future__ import annotations
 
 import importlib
+import sqlite3
 from types import SimpleNamespace
 from typing import Any
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import frappe
 import pytest
@@ -147,7 +148,12 @@ def test_asset_and_schedule_queries_compile_scope_and_select_rows(report: Any) -
         captured.append(query.get_sql())
         return asset_rows if len(captured) == 1 else schedule_rows
 
-    qb = SimpleNamespace(DocType=MariaDB.DocType, from_=MariaDB.from_)
+    asset = MariaDB.DocType("Asset")
+    qb = SimpleNamespace(
+        DocType=MariaDB.DocType,
+        from_=MariaDB.from_,
+        get_query=MagicMock(return_value=MariaDB.from_(asset).select(asset.name)),
+    )
     filters = frappe._dict(
         company="K", to_date="2026-01-31", asset_category="Cat", status="Submitted"
     )
@@ -177,6 +183,94 @@ def test_asset_and_schedule_queries_compile_scope_and_select_rows(report: Any) -
         "finance_book",
     ):
         assert token in schedule_sql
+
+
+@pytest.mark.parametrize(
+    ("permitted_location", "selected_asset", "expected"),
+    [
+        ("Allowed", None, ["A"]),
+        (None, None, ["A", "B"]),
+        ("Allowed", "B", []),
+        ("Missing", None, []),
+    ],
+)
+def test_asset_visibility_filters_metadata_before_summary_and_related_reads(
+    report: Any,
+    *,
+    permitted_location: str | None,
+    selected_asset: str | None,
+    expected: list[str],
+) -> None:
+    # Execute the report SQL against real rows; replace only Frappe's site-backed
+    # permission query with the Location scope it would supply for this reader.
+    asset = MariaDB.DocType("Asset")
+    permitted = MariaDB.from_(asset).select(asset.name)
+    if permitted_location is not None:
+        permitted = permitted.where(asset.location == permitted_location)
+    get_query = MagicMock(return_value=permitted)
+    qb = SimpleNamespace(
+        DocType=MariaDB.DocType, from_=MariaDB.from_, get_query=get_query
+    )
+    query_type = type(MariaDB.from_(asset))
+    with sqlite3.connect(":memory:") as connection:
+        connection.execute(
+            'CREATE TABLE "tabAsset" (name TEXT, asset_name TEXT, company TEXT, '
+            "docstatus INTEGER, status TEXT, asset_category TEXT, purchase_date TEXT, "
+            "disposal_date TEXT, net_purchase_amount REAL, "
+            "opening_accumulated_depreciation REAL, "
+            "opening_number_of_booked_depreciations INTEGER, "
+            "total_number_of_depreciations INTEGER, location TEXT)"
+        )
+        connection.executemany(
+            'INSERT INTO "tabAsset" VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+            [
+                (
+                    name,
+                    name,
+                    "K",
+                    1,
+                    "Submitted",
+                    "Cat",
+                    "2025-01-01",
+                    None,
+                    5000,
+                    500,
+                    1,
+                    10,
+                    location,
+                )
+                for name, location in (("A", "Allowed"), ("B", "Denied"))
+            ],
+        )
+
+        def execute_query(query: Any, **_kwargs: Any) -> list[Any]:
+            cursor = connection.execute(query.get_sql())
+            columns = [column[0] for column in cursor.description]
+            return [frappe._dict(zip(columns, row, strict=True)) for row in cursor]
+
+        with (
+            patch.object(report.frappe, "qb", qb),
+            patch.object(query_type, "run", execute_query),
+            patch.object(report, "_resolve_finance_book", return_value=None),
+            patch.object(report, "_get_schedule_details", return_value={}) as schedules,
+            patch.object(report, "_get_gl_totals", return_value={}) as totals,
+            patch.object(report, "_get_booked_depreciation_counts", return_value={}),
+        ):
+            rows = report.get_data(
+                frappe._dict(company="K", to_date="2026-01-31", asset=selected_asset)
+            )
+        assert [row.asset for row in rows] == expected
+        assert all(row.purchase_amount == 5000 for row in rows)
+        assert all(row.opening_accumulated_depreciation == 500 for row in rows)
+        get_query.assert_called_once_with(
+            "Asset", fields=["name"], ignore_permissions=False
+        )
+        if expected:
+            assert schedules.call_args.args[0] == expected
+            assert totals.call_args.args[1] == expected
+        else:
+            schedules.assert_not_called()
+            totals.assert_not_called()
 
 
 def test_summary_zero_schedule_and_disposal_dates(report: Any) -> None:
@@ -276,6 +370,8 @@ def test_gl_totals_query_scopes_disposal_signs_and_books(report: Any) -> None:
     filters = frappe._dict(company="K", from_date="2026-01-01", to_date="2026-01-31")
     with (
         patch.object(report.frappe, "qb", qb),
+        patch.object(report.frappe, "has_permission", return_value=True),
+        patch.object(report.frappe, "build_match_conditions", return_value=""),
         patch.object(query_type, "run", capture),
     ):
         assert (
@@ -349,7 +445,12 @@ def test_asset_and_schedule_named_only_and_default_scope_branches(report: Any) -
         captured.append(query.get_sql())
         return [frappe._dict(asset="A", name="S", finance_book="Book", idx=1)]
 
-    qb = SimpleNamespace(DocType=MariaDB.DocType, from_=MariaDB.from_)
+    asset = MariaDB.DocType("Asset")
+    qb = SimpleNamespace(
+        DocType=MariaDB.DocType,
+        from_=MariaDB.from_,
+        get_query=MagicMock(return_value=MariaDB.from_(asset).select(asset.name)),
+    )
     with (
         patch.object(report.frappe, "qb", qb),
         patch.object(query_type, "run", capture),

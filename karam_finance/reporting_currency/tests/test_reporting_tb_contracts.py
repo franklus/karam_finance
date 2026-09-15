@@ -5,11 +5,14 @@ from __future__ import annotations
 import importlib
 from decimal import Decimal
 from typing import Any
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import frappe
 import pytest
+from frappe.query_builder import Criterion
 from frappe.query_builder.builder import MariaDB
+
+from karam_finance.reporting_currency import permissions as reporting_permissions
 
 MODULE = "karam_finance.reporting_currency.report.trial_balance_(reporting_currency).tbk_data"
 
@@ -292,7 +295,13 @@ def test_get_data_hides_mixed_account_currency_at_parent_and_total(data: Any) ->
 
 
 def _use_mariadb_query_builder(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Bind only the MariaDB query builder; no Frappe site or database is used."""
+    """Bind synthetic query inputs; native tests exercise actual source permissions."""
+    # Native tests verify source access; these contracts retain mocked query inputs.
+    monkeypatch.setattr(
+        reporting_permissions,
+        "source_visibility",
+        MagicMock(return_value=Criterion.all([])),
+    )
     monkeypatch.setattr(frappe, "qb", MariaDB)
     monkeypatch.setattr(frappe, "db", type("MariaDB", (), {"db_type": "mariadb"})())
 

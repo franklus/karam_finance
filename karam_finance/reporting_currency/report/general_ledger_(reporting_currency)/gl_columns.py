@@ -249,7 +249,9 @@ def _order_rc_columns(
     columns = _visible_rc_columns(columns, filters)
     primary = {"debit", "credit", "balance"}
     first = {"gl_entry", "posting_date", "account"}
-    ordered = [column for column in columns if column.get("fieldname") in first]
+    ordered: list[dict[str, Any]] = [
+        column for column in columns if column.get("fieldname") in first
+    ]
     ordered.append(
         {
             "label": _("Entry Type"),
@@ -271,45 +273,57 @@ def _order_rc_columns(
                 "width": 85,
             }
         )
-    if filters.get("show_exchange_details"):
-        ordered.extend(
-            [
-                {
-                    "label": _("Source GL Entry"),
-                    "fieldname": "source_gl_entry",
-                    "fieldtype": "Link",
-                    "options": "GL Entry",
-                    "width": 170,
-                },
-                {
-                    "label": _("Conversion Basis"),
-                    "fieldname": "conversion_basis",
-                    "fieldtype": "Data",
-                    "width": 250,
-                },
-                {
-                    "label": _("Stored Conversion Rate"),
-                    "fieldname": "exchange_rate",
-                    "fieldtype": "Float",
-                    "precision": 9,
-                    "width": 130,
-                },
-                {
-                    "label": _("Rate Date"),
-                    "fieldname": "exchange_rate_date",
-                    "fieldtype": "Date",
-                    "width": 110,
-                },
-                {
-                    "label": _("Currency Exchange"),
-                    "fieldname": "currency_exchange",
-                    "fieldtype": "Link",
-                    "options": "Currency Exchange",
-                    "width": 170,
-                },
-            ]
-        )
-    return ordered
+    ordered.extend(
+        [
+            {
+                "label": _("Source GL Entry"),
+                "fieldname": "source_gl_entry",
+                "fieldtype": "Link",
+                "options": "GL Entry",
+                "width": 170,
+            },
+            {
+                "label": _("Currency Exchange"),
+                "fieldname": "currency_exchange",
+                "fieldtype": "Link",
+                "options": "Currency Exchange",
+                "width": 170,
+            },
+            {
+                "label": _("Rate Date"),
+                "fieldname": "exchange_rate_date",
+                "fieldtype": "Date",
+                "width": 110,
+            },
+            {
+                "label": _("Source Exchange Rate"),
+                "fieldname": "source_exchange_rate",
+                "fieldtype": "Float",
+                "precision": 9,
+                "width": 180,
+            },
+            {
+                "label": _("Rate Application"),
+                "fieldname": "exchange_rate_application",
+                "fieldtype": "Data",
+                "width": 140,
+            },
+        ]
+    )
+    leading = (
+        "gl_entry",
+        "source_gl_entry",
+        "posting_date",
+        "currency_exchange",
+        "exchange_rate_date",
+        "source_exchange_rate",
+        "exchange_rate_application",
+        "account",
+    )
+    by_field = {column["fieldname"]: column for column in ordered}
+    return [by_field[field] for field in leading] + [
+        column for column in ordered if column["fieldname"] not in leading
+    ]
 
 
 def _get_dimension_columns(filters: dict[str, Any]) -> list[dict[str, Any]]:

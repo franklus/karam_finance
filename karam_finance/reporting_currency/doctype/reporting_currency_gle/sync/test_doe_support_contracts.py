@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 from types import SimpleNamespace
-from typing import Any
+from typing import Any, override
 from unittest import TestCase
 from unittest.mock import Mock, patch
 
 import frappe
+
+from karam_finance.reporting_currency import ledger_lock
 
 from . import doe, utils
 
@@ -29,6 +31,21 @@ def _translated_text(message: str) -> str:
 
 
 class TestCsvAndDoeContracts(TestCase):
+    @override
+    def setUp(self) -> None:
+        # Native lock behaviour is exercised by separate-connection integration tests.
+        for target in (ledger_lock, doe):
+            lock_patch = patch.object(
+                target,
+                "hold_ledger_lock",
+                side_effect=lambda: Mock(
+                    database=doe.frappe.db,
+                    scopes=0,
+                ),
+            )
+            lock_patch.start()
+            self.addCleanup(lock_patch.stop)
+
     def test_progress_publication_preserves_event_payload_and_target_user(self) -> None:
         with (
             patch.object(utils, "frappe") as frappe_mock,
@@ -285,6 +302,7 @@ class TestCsvAndDoeContracts(TestCase):
                     patch.object(doe, "_publish_progress") as progress,
                     patch.object(doe, "_bulk_insert_doe_records") as insert,
                     patch.object(doe, "validate_doe_exchange_rates"),
+                    patch.object(doe, "validate_offset_accounts"),
                     self.assertRaisesRegex(frappe.ValidationError, message),
                 ):
                     frappe_mock.db = database
@@ -327,6 +345,7 @@ class TestCsvAndDoeContracts(TestCase):
             patch.object(doe, "frappe") as frappe_mock,
             patch.object(doe, "get_reporting_company", return_value="Karam"),
             patch.object(doe, "validate_doe_exchange_rates"),
+            patch.object(doe, "validate_offset_accounts"),
             patch.object(doe, "_get_excluded_accounts_condition", return_value=""),
             patch.object(
                 doe, "_get_rc_parameters_sorted_by_date", return_value=["row"]
@@ -344,7 +363,7 @@ class TestCsvAndDoeContracts(TestCase):
             }
         insert.assert_not_called()
 
-    def test_empty_background_finish_commits_and_updates_watermark_without_insert(
+    def test_empty_background_finish_preserves_source_watermarks(
         self,
     ) -> None:
         database = Mock()
@@ -363,7 +382,7 @@ class TestCsvAndDoeContracts(TestCase):
                 "records_created": 0,
             }
         insert.assert_not_called()
-        settings.db_set.assert_called_once_with("last_sync_timestamp", "watermark")
+        settings.db_set.assert_not_called()
         database.commit.assert_called_once()
 
     def test_doe_parameter_with_no_account_groups_returns_row_status(self) -> None:

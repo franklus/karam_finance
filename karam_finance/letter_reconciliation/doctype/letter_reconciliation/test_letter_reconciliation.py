@@ -64,7 +64,7 @@ class TestLetterReconciliation(FrappeTestCase):
     ) -> None:
         """Pass when totals match within precision."""
         mock_get_value.side_effect = ["BHD", 1000]
-        lr.validate_sum_of_credit_and_debit(
+        lr._validate_totals(
             cr_items=[{"credit": 1.111}],
             dt_items=[{"debit": 1.111}],
             account="Test",
@@ -78,7 +78,7 @@ class TestLetterReconciliation(FrappeTestCase):
         """Raise when totals differ beyond precision."""
         mock_get_value.side_effect = ["BHD", 1000]
         with pytest.raises(ValidationError):
-            lr.validate_sum_of_credit_and_debit(
+            lr._validate_totals(
                 cr_items=[{"credit": 1.111}],
                 dt_items=[{"debit": 1.112}],
                 account="Test",

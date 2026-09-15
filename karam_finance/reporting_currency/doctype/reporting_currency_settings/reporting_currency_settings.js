@@ -9,6 +9,22 @@ frappe.ui.form.on("Reporting Currency Settings", {
     syncButton.addClass("btn-primary");
   },
 
+  async before_save(frm) {
+    const previousCurrency = frm.doc.__onload?.saved_reporting_currency;
+    if (
+      !frm.doc.__onload?.has_reporting_entries ||
+      !previousCurrency ||
+      previousCurrency === frm.doc.reporting_currency
+    ) {
+      return;
+    }
+
+    // The confirmed background rebuild owns this change so the settings and
+    // generated ledger are published atomically.
+    frappe.validated = false;
+    await confirm_reporting_currency_change(frm, previousCurrency);
+  },
+
   add_accounts(frm) {
     if (!frm.doc.parent_account) {
       frappe.msgprint({
@@ -86,6 +102,40 @@ frappe.ui.form.on("Reporting Currency Settings", {
   }
 });
 
+function confirm_reporting_currency_change(frm, previousCurrency) {
+  const escape = frappe.utils.escape_html;
+  return new Promise((resolve) => {
+    frappe.confirm(
+      __(
+        "Change reporting currency from {0} to {1} and rebuild generated GL and DOE entries using the DOE rates currently entered in Reporting Currency Parameters? Save other settings separately. The previous settings and ledger will remain in place if rebuilding fails.",
+        [escape(previousCurrency), escape(frm.doc.reporting_currency)]
+      ),
+      () => {
+        queue_reporting_currency_change(frm);
+        resolve();
+      },
+      resolve
+    );
+  });
+}
+
+function queue_reporting_currency_change(frm) {
+  const doeRates = Object.fromEntries(
+    (frm.doc.rc_parameters || []).map((row) => [row.name, row.exchange_rate])
+  );
+  frappe.call({
+    method: "karam_finance.reporting_currency.currency_change.enqueue_currency_change",
+    args: {
+      requested_currency: frm.doc.reporting_currency,
+      expected_modified: frm.doc.modified,
+      confirmed: true,
+      ...(Object.keys(doeRates).length ? { doe_rates: doeRates } : {})
+    },
+    callback: (response) =>
+      watch_reporting_currency_sync(frm, null, response.message || {})
+  });
+}
+
 function fetch_accounts(frm, callback) {
   frappe.call({
     method:
@@ -127,39 +177,9 @@ function queue_reporting_currency_sync(frm, button) {
 }
 
 function watch_reporting_currency_sync(frm, button, data) {
-  const progressEvent = data.progress_event;
-  const doneEvent = data.done_event;
-  const title = __("Syncing Reporting Currency Data");
-
-  if (!progressEvent || !doneEvent) {
-    frappe.msgprint({
-      title: __("Unable to Start Sync"),
-      message: __("The server did not return progress information."),
-      indicator: "red"
-    });
-    reenable_button(button);
-    return;
-  }
-
-  frappe.show_progress(title, 0, 100, __("Job queued..."));
-
-  const progressHandler = (payload = {}) => {
-    const total = payload.total || 100;
-    const current = Math.min(payload.current || 0, total);
-    const message = payload.message || __("Processing...");
-    frappe.show_progress(title, current, total, message);
-  };
-
-  const doneHandler = (payload = {}) => {
-    frappe.realtime.off(progressEvent, progressHandler);
-    frappe.realtime.off(doneEvent, doneHandler);
-    frappe.hide_progress();
-
-    finish_reporting_currency_sync(frm, button, payload);
-  };
-
-  frappe.realtime.on(progressEvent, progressHandler);
-  frappe.realtime.on(doneEvent, doneHandler);
+  frappe.require("/assets/karam_finance/js/reporting_currency_sync_status.js", () =>
+    window.watchReportingCurrencySync(frm, button, data, finish_reporting_currency_sync)
+  );
 }
 
 function finish_reporting_currency_sync(frm, button, payload) {

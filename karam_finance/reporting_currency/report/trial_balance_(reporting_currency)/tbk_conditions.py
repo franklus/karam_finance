@@ -15,6 +15,8 @@ from frappe import _
 from frappe.query_builder.functions import Coalesce
 from frappe.utils import cstr
 
+from karam_finance.reporting_currency.permissions import apply_reporting_permissions
+
 
 def apply_gl_filters(
     query: Any,
@@ -26,10 +28,7 @@ def apply_gl_filters(
 ) -> Any:
     """Apply v16 Trial Balance filters to a GL Entry query."""
 
-    permitted = frappe.qb.get_query(
-        "Reporting Currency GLE", fields=["name"], ignore_permissions=False
-    )
-    query = query.where(gl_entry.name.isin(permitted))
+    query = apply_reporting_permissions(query, gl_entry)
     for key, field in (
         ("exclude_reporting_doe", "reporting_doe"),
         ("exclude_manual_entries", "manual_entry"),

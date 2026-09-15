@@ -7,6 +7,7 @@ from unittest.mock import Mock, patch
 from frappe import _dict
 from frappe.tests.utils import FrappeTestCase
 
+from karam_finance.reporting_currency import ledger_lock
 from karam_finance.reporting_currency.doctype.reporting_currency_gle.sync import doe
 
 
@@ -159,6 +160,18 @@ class TestDoeWorkflow(TestCase):
             patch.object(doe, "get_reporting_company", return_value="Karam")
         )
         self.enterContext(patch.object(doe, "_publish_progress"))
+        self.enterContext(patch.object(doe, "validate_offset_accounts"))
+        self.enterContext(patch.object(doe, "hold_ledger_lock"))
+        self.enterContext(
+            patch.object(
+                ledger_lock,
+                "hold_ledger_lock",
+                side_effect=lambda: Mock(
+                    database=self.frappe_mock.db,
+                    scopes=0,
+                ),
+            )
+        )
         self.enterContext(
             patch("erpnext.accounts.utils.get_fiscal_year", return_value=("2025",))
         )
@@ -194,11 +207,7 @@ class TestDoeWorkflow(TestCase):
         result = doe._compute_doe_background()
         self._assert_cumulative_rows(result)
         assert self.frappe_mock.db.commit.call_count == 2
-        self.frappe_mock.get_single.return_value.db_set.assert_called_once()
-        assert (
-            self.frappe_mock.get_single.return_value.db_set.call_args.args[0]
-            == "last_sync_timestamp"
-        )
+        self.frappe_mock.get_single.return_value.db_set.assert_not_called()
 
     def test_inline_insertion_failure_rolls_back_to_its_savepoint(self) -> None:
         self.insert.side_effect = RuntimeError("simulated insertion failure")

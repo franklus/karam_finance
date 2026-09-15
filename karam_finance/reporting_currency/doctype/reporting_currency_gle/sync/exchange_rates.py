@@ -7,8 +7,12 @@ and temporal coverage validation.
 from __future__ import annotations
 
 import bisect
+from collections import defaultdict
+from decimal import Decimal
+from html import escape as escape_html
 from operator import itemgetter
 from typing import TYPE_CHECKING, Any, cast
+from urllib.parse import urlencode
 
 if TYPE_CHECKING:
     from datetime import date
@@ -60,61 +64,76 @@ def build_exchange_rate_timeline(
         ...
     ]
     """
-    timeline = []
-    direct_dates = set()  # Track dates with direct rates
-
-    # Fetch direct rates first: default_currency → reporting_currency
+    timeline: list[dict[str, Any]] = []
     if coverage["direct"]:
-        direct_rates = frappe.db.get_all(
-            DOCTYPE_CURRENCY_EXCHANGE,
-            filters={
-                "from_currency": default_currency,
-                "to_currency": reporting_currency,
-            },
-            fields=["name", "date", "exchange_rate"],
-            order_by="date asc",
+        timeline = _direction_timeline(
+            default_currency,
+            reporting_currency,
+            direction="direct",
+            excluded_dates=set(),
         )
-        for rate in direct_rates:
-            rate_date = getdate(rate["date"])
-            timeline.append(
-                {
-                    "date": rate_date,
-                    "rate": flt(rate["exchange_rate"]),
-                    "direction": "direct",
-                    "currency_exchange": rate.get("name"),
-                }
-            )
-            direct_dates.add(rate_date)  # Track this date
-
-    # Fetch inverse rates: reporting_currency → default_currency
-    # Only include inverse rates for dates where no direct rate exists
+    direct_dates = {rate["date"] for rate in timeline}
     if coverage["inverse"]:
-        inverse_rates = frappe.db.get_all(
-            DOCTYPE_CURRENCY_EXCHANGE,
-            filters={
-                "from_currency": reporting_currency,
-                "to_currency": default_currency,
-            },
-            fields=["name", "date", "exchange_rate"],
-            order_by="date asc",
+        timeline.extend(
+            _direction_timeline(
+                reporting_currency,
+                default_currency,
+                direction="inverse",
+                excluded_dates=direct_dates,
+            )
         )
-        for rate in inverse_rates:
-            rate_date = getdate(rate["date"])
-            # Skip if direct rate already exists for this date
-            if rate_date not in direct_dates:
-                timeline.append(
-                    {
-                        "date": rate_date,
-                        "rate": flt(rate["exchange_rate"]),
-                        "direction": "inverse",
-                        "currency_exchange": rate.get("name"),
-                    }
-                )
+    return sorted(timeline, key=itemgetter("date"))
 
-    # Sort combined timeline by date (no ambiguity now - max one rate per date)
-    timeline.sort(key=itemgetter("date"))
 
+def _direction_timeline(
+    from_currency: str,
+    to_currency: str,
+    *,
+    direction: str,
+    excluded_dates: set[date],
+) -> list[dict[str, Any]]:
+    candidates = frappe.db.get_all(
+        DOCTYPE_CURRENCY_EXCHANGE,
+        filters={"from_currency": from_currency, "to_currency": to_currency},
+        fields=["name", "date", "exchange_rate"],
+        order_by="date asc, name asc",
+    )
+    grouped: dict[date, list[dict[str, Any]]] = defaultdict(list)
+    for candidate in candidates:
+        day = _required_rate_date(candidate["date"])
+        if day not in excluded_dates:
+            grouped[day].append(candidate)
+    timeline: list[dict[str, Any]] = []
+    for day, records in grouped.items():
+        records.sort(key=itemgetter("name"))
+        _validate_same_day_rates(records, from_currency, to_currency, day=day)
+        timeline.append(
+            {
+                "date": day,
+                "rate": flt(records[0]["exchange_rate"]),
+                "direction": direction,
+                "currency_exchange": records[0].get("name"),
+            }
+        )
     return timeline
+
+
+def _validate_same_day_rates(
+    records: list[dict[str, Any]], from_currency: str, to_currency: str, *, day: date
+) -> None:
+    values = {Decimal(str(record["exchange_rate"])) for record in records}
+    if len(values) != 1:
+        frappe.throw(
+            _(
+                "Conflicting exchange rates for {0} to {1} on {2}: {3}. "
+                "Resolve these Currency Exchange records before synchronising."
+            ).format(
+                from_currency,
+                to_currency,
+                day,
+                ", ".join(str(record.get("name")) for record in records),
+            )
+        )
 
 
 # ============================================================================
@@ -281,14 +300,24 @@ def _throw_temporal_coverage_error(
             cache_key, entries_before_ce, expires_in_sec=TEMP_CACHE_EXPIRATION_SEC
         )
 
+        download_query = urlencode(
+            {
+                "cache_key": cache_key,
+                "default_currency": default_currency,
+                "reporting_currency": reporting_currency,
+            }
+        )
+        download_url = (
+            "/api/method/karam_finance.reporting_currency.doctype."
+            "reporting_currency_gle.sync.utils.export_temporal_validation_entries_csv?"
+            + download_query
+        )
         error_parts.extend(
             [
                 '<div style="margin-bottom: 15px;">',
-                '<button class="btn btn-sm btn-primary" ',
-                f"""onclick="downloadTemporalValidationCSV('{cache_key}', '{default_currency}', '{reporting_currency}')" """,
-                'style="font-size: 90%;">',
+                f'<a class="btn btn-sm btn-primary" href="{escape_html(download_url, quote=True)}">',
                 f'<i class="fa fa-download"></i> Download Full List (CSV) - {total_count} entries',
-                "</button>",
+                "</a>",
                 "</div>",
             ]
         )

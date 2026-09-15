@@ -67,6 +67,95 @@ class TestItemPriceHelperContracts(TestCase):
         matching.assert_not_called()
         same_date.assert_not_called()
 
+    def test_creation_endpoint_rejects_unreadable_existing_prices_before_policy(
+        self,
+    ) -> None:
+        def can_read(*_args: object, **kwargs: object) -> bool:
+            return not kwargs.get("doc")
+
+        self.frappe.has_permission.side_effect = can_read
+        existing = {
+            "name": "RESTRICTED-PRICE",
+            "price_list_rate": 900,
+            "item_name": "Restricted item name",
+            "packing_unit": 0,
+        }
+        for rate, update, throw in ((900, 1, 0), (100, 0, 1), (100, 1, 0), (100, 0, 0)):
+            with (
+                self.subTest(rate=rate, update=update, throw=throw),
+                patch.object(self.module, "_lock_item_price_scope"),
+                patch.object(
+                    self.module,
+                    "get_rate_mismatch_settings",
+                    return_value=frappe._dict(
+                        enabled=1, update_item_price=update, throw_exception=throw
+                    ),
+                ),
+                patch.object(
+                    self.module,
+                    "find_item_price_with_same_valid_from",
+                    return_value=existing,
+                ),
+                pytest.raises(frappe.PermissionError) as error,
+            ):
+                self.module.create_item_price_for_rate_mismatch(
+                    item_code="ITEM",
+                    price_list="Restricted",
+                    currency="USD",
+                    stock_uom="Nos",
+                    conversion_factor=1,
+                    price_list_rate=rate,
+                    rate=rate,
+                    doctype="Sales Invoice",
+                    posting_date="2026-01-01",
+                )
+            assert "RESTRICTED-PRICE" not in str(error.value)
+            assert "900" not in str(error.value)
+            assert "Restricted item name" not in str(error.value)
+        self.frappe.get_doc.assert_not_called()
+
+    def test_creation_endpoint_reuses_readable_existing_price(self) -> None:
+        self.frappe.has_permission.return_value = True
+        with (
+            patch.object(self.module, "_lock_item_price_scope"),
+            patch.object(
+                self.module,
+                "get_rate_mismatch_settings",
+                return_value=frappe._dict(
+                    enabled=1, update_item_price=1, throw_exception=0
+                ),
+            ),
+            patch.object(
+                self.module,
+                "find_item_price_with_same_valid_from",
+                return_value={
+                    "name": "READABLE-PRICE",
+                    "price_list_rate": 100,
+                    "item_name": "Item",
+                    "packing_unit": 0,
+                },
+            ),
+        ):
+            result = self.module.create_item_price_for_rate_mismatch(
+                item_code="ITEM",
+                price_list="Retail",
+                currency="USD",
+                stock_uom="Nos",
+                conversion_factor=1,
+                price_list_rate=100,
+                rate=100,
+                doctype="Sales Invoice",
+                posting_date="2026-01-01",
+            )
+        assert result == {
+            "created": False,
+            "reused": True,
+            "item_price_name": "READABLE-PRICE",
+            "price_list_rate": 100,
+            "valid_from": date(2026, 1, 1),
+        }
+        self.frappe.get_doc.assert_not_called()
+
     def test_item_price_lookup_wrappers_build_their_complete_scope(self) -> None:
         same_date_result = {
             "name": "IP-SAME",

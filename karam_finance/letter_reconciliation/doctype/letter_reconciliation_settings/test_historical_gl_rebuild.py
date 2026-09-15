@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from datetime import date
 from types import SimpleNamespace
+from typing import override
 from unittest.mock import MagicMock, patch
 
 import frappe
@@ -28,6 +29,14 @@ _REBUILD_MODULE = (
 
 class TestHistoricalGLRebuild(FrappeTestCase):
     """Regression tests for historical rebuild behaviour."""
+
+    @override
+    def setUp(self) -> None:
+        super().setUp()
+        # These mocked vouchers isolate classification/repost behaviour.
+        # Native access enforcement is covered in test_historical_rebuild_permissions.
+        self.enterContext(patch.object(rebuild, "check_rebuild_journals"))
+        self.enterContext(patch.object(rebuild, "check_rebuild_voucher"))
 
     def test_build_rebuild_preview_classifies_subset(self) -> None:
         """Preview should split vouchers into eligible, blocked, and correct."""

@@ -17,6 +17,13 @@ MODULE_NAME = (
 )
 
 
+@pytest.fixture(autouse=True)  # noqa: V103 - pytest autouse fixture.
+def unrestricted_source_permissions(monkeypatch: pytest.MonkeyPatch) -> None:
+    # These unit contracts exercise aggregation; site tests cover real restrictions.
+    monkeypatch.setattr(frappe, "has_permission", Mock(return_value=True))
+    monkeypatch.setattr(frappe, "build_match_conditions", Mock(return_value=""))
+
+
 @pytest.fixture(scope="module")
 def report_module() -> Any:
     return importlib.import_module(MODULE_NAME)

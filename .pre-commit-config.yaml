@@ -41,9 +41,13 @@ repos:
 
       - id: module-size
         name: Python physical module size
-        entry: pylint --rcfile=pyproject.toml karam_finance tools
+        entry: >-
+          semgrep scan --error --strict --metrics=off --disable-version-check
+          --config tools/semgrep/python_module_size.yml
+          --max-target-bytes=0 --no-git-ignore --x-ignore-semgrepignore-files
+          karam_finance tools
         language: python
-        additional_dependencies: [pylint==4.0.8]
+        additional_dependencies: [semgrep==1.176.0]
         pass_filenames: false
         always_run: true
 

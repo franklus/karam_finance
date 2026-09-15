@@ -6,7 +6,7 @@
 from types import SimpleNamespace
 from typing import cast, override
 from unittest import TestCase
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock, call, patch
 
 import frappe
 import pytest
@@ -29,9 +29,12 @@ class TestReportingCurrencySettings(TestCase):
         self.frappe.throw.side_effect = _raise_validation
         self.enterContext(patch.object(module, "frappe", self.frappe))
         self.enterContext(patch.object(module, "_", side_effect=str))
+        self.enterContext(patch.object(module, "hold_ledger_lock"))
+        self.frappe.db.get_single_value.return_value = None
 
     def test_validate_requires_posting_date_after_validating_rate(self) -> None:
         settings = object.__new__(module.ReportingCurrencySettings)
+        settings.__dict__["reporting_currency"] = None
         settings.__dict__["rc_parameters"] = [
             SimpleNamespace(idx=3, exchange_rate=2, doe_posting_date=None)
         ]
@@ -40,13 +43,63 @@ class TestReportingCurrencySettings(TestCase):
 
     def test_validate_accepts_an_empty_parameter_table(self) -> None:
         settings = object.__new__(module.ReportingCurrencySettings)
+        settings.__dict__["reporting_currency"] = None
         settings.__dict__["rc_parameters"] = cast("list[object]", [])
         module.ReportingCurrencySettings.validate(settings)
         self.frappe.throw.assert_not_called()
 
+    def test_onload_exposes_the_saved_currency_and_ledger_state(self) -> None:
+        settings = MagicMock()
+        settings.reporting_currency = "USD"
+        self.frappe.db.exists.return_value = "RC-GLE-1"
+
+        module.ReportingCurrencySettings.onload(settings)
+
+        assert settings.set_onload.call_args_list == [
+            call("has_reporting_entries", True),
+            call("saved_reporting_currency", "USD"),
+        ]
+
     def test_exchange_rate_validator_accepts_a_positive_finite_row(self) -> None:
         module.validate_doe_exchange_rates([SimpleNamespace(idx=1, exchange_rate=1.25)])
         self.frappe.throw.assert_not_called()
+
+    def test_settings_reject_ineligible_offset_accounts(self) -> None:
+        settings = object.__new__(module.ReportingCurrencySettings)
+        settings.__dict__["reporting_currency"] = None
+        settings.__dict__["rc_parameters"] = [
+            SimpleNamespace(
+                idx=1,
+                exchange_rate=2,
+                doe_posting_date="2026-01-01",
+                profit_account="Offset",
+                loss_account="Offset",
+            )
+        ]
+        for invalid in (
+            {"company": "Other"},
+            {"is_group": 1},
+            {"disabled": 1},
+            {"root_type": "Asset"},
+        ):
+            with self.subTest(invalid=invalid):
+                account = frappe._dict(
+                    name="Offset",
+                    company="Company",
+                    is_group=0,
+                    disabled=0,
+                    root_type="Expense",
+                )
+                account.update(invalid)
+                database = MagicMock()
+                with (
+                    patch.object(frappe, "get_all", return_value=[account]),
+                    patch.object(frappe, "db", database),
+                    patch.object(frappe, "throw", side_effect=_raise_validation),
+                    pytest.raises(frappe.ValidationError, match="DOE offset account"),
+                ):
+                    database.get_all.return_value = ["Company"]
+                    module.ReportingCurrencySettings.validate(settings)
 
     def test_accounts_under_parent_validates_parent_and_returns_empty_list(
         self,

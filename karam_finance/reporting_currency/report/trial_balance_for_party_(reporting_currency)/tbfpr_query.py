@@ -7,6 +7,8 @@ from frappe.query_builder import Case
 from frappe.query_builder.functions import Sum
 from frappe.utils import flt
 
+from karam_finance.reporting_currency.permissions import apply_reporting_permissions
+
 from .tbfpr_constants import DOCTYPE_RC_GLE
 
 
@@ -72,12 +74,7 @@ def get_reporting_currency_balances(filters: Any, account_filter: Any = None) ->
 
 def _apply_source_permissions(query: Any, rcgle: Any, filters: Any) -> Any:
     """Apply source-row and Dynamic Link party permissions before grouping."""
-    permitted_rc_gle = frappe.qb.get_query(
-        DOCTYPE_RC_GLE,
-        fields=["name"],
-        ignore_permissions=False,
-    )
-    query = query.where(rcgle.name.isin(permitted_rc_gle))
+    query = apply_reporting_permissions(query, rcgle)
 
     # ``party`` is a Dynamic Link, so Frappe cannot infer its target doctype
     # while applying Reporting Currency GLE user permissions.

@@ -120,6 +120,7 @@ def _entry() -> Any:
     "options",
     [
         {},
+        {"show_exchange_details": 0},
         {
             "include_dimensions": 1,
             "show_remarks": 1,
@@ -162,8 +163,33 @@ def test_execute_uses_real_validation_columns_aggregation_and_balances(
             options.get("show_source_currency_columns")
         )
         assert "letter" not in fields
+        _assert_reporting_exchange_columns(fields)
         assert rows[0]["_report_context_details"]["currency"] == "USD"
     assert report.get_gl_entries.call_args.kwargs == {"enrich_opening_entries": False}
+
+
+def _assert_reporting_exchange_columns(fields: dict[str, Any]) -> None:
+    rate_columns = {
+        "currency_exchange": "Currency Exchange",
+        "exchange_rate_date": "Rate Date",
+        "source_exchange_rate": "Source Exchange Rate",
+        "exchange_rate_application": "Rate Application",
+    }
+    for field, label in rate_columns.items():
+        assert fields[field]["label"] == label
+    assert fields["source_exchange_rate"]["precision"] == 9
+    assert "exchange_rate" not in fields
+    assert "conversion_basis" not in fields
+    assert list(fields)[:8] == [
+        "gl_entry",
+        "source_gl_entry",
+        "posting_date",
+        "currency_exchange",
+        "exchange_rate_date",
+        "source_exchange_rate",
+        "exchange_rate_application",
+        "account",
+    ]
 
 
 def test_execute_empty_input_and_empty_ledger(report: ModuleType) -> None:

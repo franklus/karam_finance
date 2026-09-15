@@ -291,6 +291,9 @@ class TestReportingGLCorrectness(TestCase):
                 ),
                 patch.object(query, "_build_qb_conditions", return_value=[]),
                 patch.object(query, "build_match_conditions", return_value=None),
+                patch.object(
+                    query, "source_visibility", return_value=Criterion.all([])
+                ),
             ):
                 openings = query.get_flat_account_currency_openings(filters)
 

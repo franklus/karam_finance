@@ -2,11 +2,14 @@
 
 from __future__ import annotations
 
+from math import isfinite
 from typing import TYPE_CHECKING, cast
 
 import frappe
 from frappe.model.document import Document
-from frappe.utils import get_datetime
+from frappe.utils import flt, get_datetime
+
+from karam_finance.reporting_currency.ledger_lock import hold_ledger_lock
 
 if TYPE_CHECKING:
     from datetime import date
@@ -28,6 +31,9 @@ class ReportingCurrencyGLE(Document):
         reporting_currency: DF.Link | None
         reporting_doe: DF.Check
         manual_entry: DF.Check
+        exchange_rate: DF.Float
+        source_exchange_rate: DF.Float
+        exchange_rate_application: DF.Data | None
 
     def autoname(self) -> None:  # noqa: V105 - Frappe document naming callback.
         """Generate naming series for manual entries.
@@ -40,6 +46,7 @@ class ReportingCurrencyGLE(Document):
 
     def before_insert(self) -> None:  # noqa: V105 - Frappe document lifecycle callback.
         """Mark manually created records."""
+        hold_ledger_lock()
         # Records created via sync will have gl_entry set before insert.
         # If gl_entry is not set, this is a manual entry.
         if not self.gl_entry:
@@ -62,6 +69,7 @@ class ReportingCurrencyGLE(Document):
 
     def validate(self) -> None:
         """Enforce the configured currency and prevent editing of DOE records."""
+        hold_ledger_lock()
         currency = frappe.db.get_single_value(
             "Reporting Currency Settings", "reporting_currency"
         )
@@ -81,6 +89,7 @@ class ReportingCurrencyGLE(Document):
                 ).format(currency)
             )
         self.reporting_currency = currency
+        _set_manual_rate_context(self)
         if self.reporting_doe == 1 and not self.is_new():
             frappe.throw(
                 frappe._(
@@ -91,6 +100,7 @@ class ReportingCurrencyGLE(Document):
 
     def on_trash(self) -> None:  # noqa: V105 - Frappe document lifecycle callback.
         """Prevent manual deletion of DOE records."""
+        hold_ledger_lock()
         if self.reporting_doe == 1:
             frappe.throw(
                 frappe._(
@@ -99,6 +109,22 @@ class ReportingCurrencyGLE(Document):
                 ),
                 title=frappe._("Cannot Delete DOE Record"),
             )
+
+
+def _set_manual_rate_context(doc: ReportingCurrencyGLE) -> None:
+    """Derive metadata only from an explicitly supplied rate and application."""
+    if doc.gl_entry or doc.reporting_doe:
+        return
+    application = doc.get("exchange_rate_application")
+    doc.exchange_rate = 0
+    if not application:
+        return
+    if application not in ("Direct", "Inverse"):
+        frappe.throw(frappe._("Rate Application must be Direct, Inverse or blank."))
+    rate = flt(doc.get("source_exchange_rate"))
+    if not isfinite(rate) or rate <= 0:
+        frappe.throw(frappe._("Source Exchange Rate must be a positive finite number."))
+    doc.exchange_rate = rate if application == "Direct" else 1 / rate
 
 
 def _generate_manual_entry_name(posting_date: str | date | None) -> str:

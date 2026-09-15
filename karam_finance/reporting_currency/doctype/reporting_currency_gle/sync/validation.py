@@ -105,10 +105,14 @@ def validate_currency_exchange_coverage(
 
     Checks for default_currency ↔ reporting_currency exchange records.
     The conversion is ALWAYS from company's default_currency to reporting_currency.
-    account_currency is only used to determine if conversion is needed.
+    No exchange record is needed when the company currency already matches
+    reporting currency, or all entries can copy their account-currency amounts.
 
     Returns dict: {"direct": bool, "inverse": bool}
     """
+    if default_currency == reporting_currency:
+        return {"direct": False, "inverse": False}
+
     # Check if any GL entries need conversion (account_currency != reporting_currency)
     needs_conversion = False
     accounts_needing_conversion = set()

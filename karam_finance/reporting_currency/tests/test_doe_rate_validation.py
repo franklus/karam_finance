@@ -7,6 +7,7 @@ from unittest.mock import Mock, patch
 
 import frappe
 
+from karam_finance.reporting_currency import ledger_lock
 from karam_finance.reporting_currency.doctype.reporting_currency_gle.sync import doe
 from karam_finance.reporting_currency.doctype.reporting_currency_settings import (
     reporting_currency_settings as settings_module,
@@ -38,6 +39,19 @@ class TestDoeRateValidation(TestCase):
             patch.object(doe, "get_reporting_company", return_value="Karam")
         )
         self.enterContext(patch.object(doe, "_publish_progress"))
+        self.enterContext(patch.object(doe, "validate_offset_accounts"))
+        self.enterContext(patch.object(settings_module, "validate_offset_accounts"))
+        self.enterContext(patch.object(doe, "hold_ledger_lock"))
+        self.enterContext(
+            patch.object(
+                ledger_lock,
+                "hold_ledger_lock",
+                side_effect=lambda: Mock(
+                    database=self.frappe_mock.db,
+                    scopes=0,
+                ),
+            )
+        )
 
     @staticmethod
     def throw_validation_error(message: str) -> None:

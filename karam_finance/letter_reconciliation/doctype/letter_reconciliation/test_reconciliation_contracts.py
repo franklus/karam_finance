@@ -18,12 +18,53 @@ def database(monkeypatch: pytest.MonkeyPatch) -> MagicMock:
     database = MagicMock()
     monkeypatch.setattr(frappe, "db", database)
     monkeypatch.setattr(frappe, "log_error", MagicMock())
+    monkeypatch.setattr(frappe, "has_permission", MagicMock(return_value=True))
     monkeypatch.setattr(
         frappe.local, "flags", frappe._dict(mute_messages=True), raising=False
     )
     monkeypatch.setattr(frappe.local, "message_log", [], raising=False)
     monkeypatch.setattr(frappe.local, "lang", "en", raising=False)
     return database
+
+
+@pytest.mark.parametrize(
+    ("method", "arguments"),
+    [
+        (lr.get_adjacent_account, {}),
+        (lr.journal_entry_list, {"account": "Cash"}),
+        (lr.validate_sum_of_credit_and_debit, {"cr_items": [], "dt_items": []}),
+        (lr.set_letter, {"cr_items": [], "dt_items": []}),
+        (lr.remove_letter, {"cr_items": [], "dt_items": []}),
+    ],
+)
+def test_reconciliation_rpc_denies_access_before_database_use(
+    database: MagicMock, method: Any, arguments: dict[str, Any]
+) -> None:
+    with (
+        patch.object(frappe, "has_permission", side_effect=frappe.PermissionError),
+        pytest.raises(frappe.PermissionError),
+    ):
+        method(**arguments)
+    assert database.mock_calls == []
+
+
+@pytest.mark.parametrize("row_id", [None, "", "  ", 123, ["ROW"]])
+def test_assignment_rejects_invalid_row_ids(database: MagicMock, row_id: Any) -> None:
+    with pytest.raises(frappe.ValidationError, match="row ID"):
+        lr.set_letter(
+            [{"jv_row_name": row_id, "credit": 10}],
+            [{"jv_row_name": "DEBIT", "debit": 10}],
+        )
+    database.bulk_update.assert_not_called()
+
+
+def test_assignment_rejects_duplicate_row_ids(database: MagicMock) -> None:
+    with pytest.raises(frappe.ValidationError, match="Duplicate"):
+        lr.set_letter(
+            [{"jv_row_name": "SAME", "credit": 10}],
+            [{"jv_row_name": "SAME", "debit": 10}],
+        )
+    database.bulk_update.assert_not_called()
 
 
 @pytest.mark.parametrize(("units", "precision"), [(1, 0), (100, 2), (1000, 3)])
@@ -92,9 +133,9 @@ def test_balance_tolerance_at_currency_boundary(
     }
     if multiple >= 1:
         with pytest.raises(frappe.ValidationError, match="must equal total debits"):
-            lr.validate_sum_of_credit_and_debit(**args)
+            lr._validate_totals(**args)
     else:
-        lr.validate_sum_of_credit_and_debit(**args)
+        lr._validate_totals(**args)
 
 
 @pytest.mark.parametrize("value", ["{", "{}", "[1]", 1])
@@ -119,7 +160,14 @@ def test_letter_state_validation(
     database: MagicMock, existing: str, removing: bool
 ) -> None:
     with (
-        patch.object(lr, "validate_sum_of_credit_and_debit"),
+        patch.object(frappe, "get_precision", return_value=2),
+        patch.object(
+            lr,
+            "load_selection",
+            return_value=([{"letter": existing}], [{"letter": existing}]),
+        ),
+        patch.object(lr, "_validate_totals"),
+        patch.object(lr, "_validate_lettering_enabled_for_accounts"),
         pytest.raises(frappe.ValidationError),
     ):
         lr._prepare_letter_items(
@@ -282,3 +330,100 @@ def test_letter_filter_keeps_null_and_empty_semantics(
         )
     assert predicate in result.get_sql().replace("`", '"')
     database.sql.assert_not_called()
+
+
+@pytest.fixture
+def stored_selection(database: MagicMock, monkeypatch: pytest.MonkeyPatch) -> list[Any]:
+    from frappe.query_builder.builder import MariaDB  # noqa: PLC0415
+
+    monkeypatch.setattr(frappe, "qb", MariaDB)
+    monkeypatch.setattr(frappe.local, "db", database, raising=False)
+    rows = [
+        frappe._dict(
+            name="C",
+            parent="JE",
+            parenttype="Journal Entry",
+            parentfield="accounts",
+            docstatus=1,
+            account="Cash",
+            letter="",
+            credit_in_account_currency=100,
+            debit_in_account_currency=0,
+        ),
+        frappe._dict(
+            name="D",
+            parent="JE",
+            parenttype="Journal Entry",
+            parentfield="accounts",
+            docstatus=1,
+            account="Cash",
+            letter="",
+            credit_in_account_currency=0,
+            debit_in_account_currency=100,
+        ),
+    ]
+    journal = frappe._dict(
+        name="JE",
+        company="Company",
+        posting_date="2025-01-01",
+        docstatus=1,
+        voucher_type="Journal Entry",
+    )
+
+    def query(sql: str, *_args: Any, **_kwargs: Any) -> list[Any]:
+        if "tabJournal Entry Account" in sql:
+            return rows
+        if "tabJournal Entry" in sql:
+            return [journal]
+        return []
+
+    def lookup(doctype: str, *_args: Any, **_kwargs: Any) -> list[Any]:
+        if doctype == "Account":
+            return [frappe._dict(name="Cash", enable_lettering=1)]
+        return ["JE", "JE"]
+
+    def value(_doctype: str, _name: str, field: str) -> Any:
+        return {"company": "Company", "account_currency": "USD", "fraction_units": 100}[
+            field
+        ]
+
+    database.sql.side_effect = query
+    database.get_value.side_effect = value
+    monkeypatch.setattr(frappe, "get_all", lookup)
+    return [rows, journal]
+
+
+def test_public_validation_ignores_forged_amounts(
+    database: MagicMock, stored_selection: list[Any]
+) -> None:
+    rows, _journal = stored_selection
+    rows[1].debit_in_account_currency = 90
+    with pytest.raises(frappe.ValidationError, match="must equal total debits"):
+        lr.validate_sum_of_credit_and_debit(
+            [{"jv_row_name": "C"}],
+            [{"jv_row_name": "D"}],
+        )
+    database.bulk_update.assert_not_called()
+
+
+@pytest.mark.parametrize("removing", [False, True])
+def test_stale_selection_cannot_overwrite_current_letters(
+    database: MagicMock, stored_selection: list[Any], removing: bool
+) -> None:
+    rows, _journal = stored_selection
+    rows[0].letter = "A"
+    operation = lr.remove_letter if removing else lr.set_letter
+    message = "same letter" if removing else "already have a letter"
+    with pytest.raises(frappe.ValidationError, match=message):
+        operation([{"jv_row_name": "C"}], [{"jv_row_name": "D"}])
+    database.bulk_update.assert_not_called()
+
+
+def test_cancelled_journal_cannot_be_reconciled(
+    database: MagicMock, stored_selection: list[Any]
+) -> None:
+    _rows, journal = stored_selection
+    journal.docstatus = 2
+    with pytest.raises(frappe.ValidationError, match="submitted"):
+        lr.set_letter([{"jv_row_name": "C"}], [{"jv_row_name": "D"}])
+    database.bulk_update.assert_not_called()

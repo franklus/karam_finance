@@ -50,12 +50,18 @@ function setupReportingGeneralLedgerFilterGroups(report) {
       [
         "show_opening_entries",
         "include_default_book_entries",
-        "show_cancelled_entries",
         "reporting_doe",
         "manual_entry"
       ]
     ],
-    ["Additional columns", ["add_values_in_transaction_currency", "show_remarks"]],
+    [
+      "Additional columns",
+      [
+        "add_values_in_transaction_currency",
+        "show_remarks",
+        "show_source_currency_columns"
+      ]
+    ],
     ["Exclusions", ["ignore_err", "ignore_cr_dr_notes"]]
   ];
   const filterMap = Object.fromEntries(
@@ -64,6 +70,10 @@ function setupReportingGeneralLedgerFilterGroups(report) {
       .map((filter) => [filter.df.fieldname, filter])
   );
 
+  // Preserve control data and change handlers when rebuilding the layout.
+  Object.values(filterMap).forEach((filter) => {
+    $(filter.wrapper).detach();
+  });
   area.empty();
   groups.forEach(([label, fieldnames]) => {
     const group = $("<div>", {
@@ -688,11 +698,6 @@ frappe.query_reports["General Ledger (Reporting Currency)"] = {
       default: 1
     },
     {
-      fieldname: "show_cancelled_entries",
-      label: __("Show Cancelled Entries"),
-      fieldtype: "Check"
-    },
-    {
       fieldname: "show_net_values_in_party_account",
       label: __("Show Net Values in Party Account"),
       fieldtype: "Check"
@@ -722,15 +727,8 @@ frappe.query_reports["General Ledger (Reporting Currency)"].filters =
   frappe.query_reports["General Ledger (Reporting Currency)"].filters.filter(
     (filter) => !["letter", "show_letter"].includes(filter.fieldname)
   );
-frappe.query_reports["General Ledger (Reporting Currency)"].filters.push(
-  {
-    fieldname: "show_source_currency_columns",
-    label: __("Show account / company amounts"),
-    fieldtype: "Check"
-  },
-  {
-    fieldname: "show_exchange_details",
-    label: __("Show stored conversion details"),
-    fieldtype: "Check"
-  }
-);
+frappe.query_reports["General Ledger (Reporting Currency)"].filters.push({
+  fieldname: "show_source_currency_columns",
+  label: __("Show account / company amounts"),
+  fieldtype: "Check"
+});

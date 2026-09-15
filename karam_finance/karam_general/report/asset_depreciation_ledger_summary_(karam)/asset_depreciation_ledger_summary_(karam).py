@@ -10,6 +10,8 @@ from frappe.query_builder import Case
 from frappe.query_builder.functions import Count, IfNull, NullIf, Sum
 from frappe.utils import cint, cstr, flt, getdate
 
+from karam_finance.common.ledger_permissions import apply_gl_permissions
+
 
 def execute(
     filters: dict[str, Any] | None = None,
@@ -64,8 +66,11 @@ def _get_assets_details(
     filters: frappe._dict[str, Any],
     finance_book_scope: tuple[str, ...],
 ) -> dict[str, frappe._dict[str, Any]]:
-    """Fetch eligible Asset metadata in one database query."""
+    """Fetch readable, eligible Asset metadata in one database query."""
     asset = frappe.qb.DocType("Asset")
+    permitted_assets = frappe.qb.get_query(
+        "Asset", fields=["name"], ignore_permissions=False
+    )
     query = (
         frappe.qb.from_(asset)
         .select(
@@ -84,6 +89,7 @@ def _get_assets_details(
         .where(asset.docstatus == 1)
         .where(asset.purchase_date <= filters.get("to_date"))
         .where(asset.status.notin(["Draft", "Cancelled"]))
+        .where(asset.name.isin(permitted_assets))
     )
 
     if filters.get("asset"):
@@ -333,6 +339,7 @@ def _get_gl_totals(
     )
 
     query = _apply_gl_finance_book_scope(query, gl_entry, finance_book_scope)
+    query = apply_gl_permissions(query, gl_entry)
     rows = query.run(as_dict=True)
     return {row.asset: row for row in rows}
 

@@ -35,24 +35,21 @@ class TestTrialBalanceForPartyPermissions(FrappeTestCase):
         query = Mock()
         query.where.return_value = query
         rcgle = SimpleNamespace(name=_Field("name"), party=_Field("party"))
-        permitted_source = object()
         permitted_parties = object()
         filters = _dict(party_type="Customer", party=None)
 
-        with patch.object(module, "frappe") as frappe_mock:
-            frappe_mock.qb.get_query.side_effect = [
-                permitted_source,
-                permitted_parties,
-            ]
+        with (
+            patch.object(module, "frappe") as frappe_mock,
+            patch.object(
+                module, "apply_reporting_permissions", return_value=query
+            ) as reporting,
+        ):
+            frappe_mock.qb.get_query.return_value = permitted_parties
             result = module._apply_source_permissions(query, rcgle, filters)
 
+        reporting.assert_called_once_with(query, rcgle)
         assert result is query
         assert frappe_mock.qb.get_query.call_args_list == [
-            call(
-                module.DOCTYPE_RC_GLE,
-                fields=["name"],
-                ignore_permissions=False,
-            ),
             call(
                 "Customer",
                 fields=["name"],
@@ -62,7 +59,6 @@ class TestTrialBalanceForPartyPermissions(FrappeTestCase):
             ),
         ]
         assert query.where.call_args_list == [
-            call(("name", permitted_source)),
             call(("party", permitted_parties)),
         ]
 

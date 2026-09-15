@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from datetime import date
+from typing import Any
 from unittest.mock import MagicMock, patch
 
 import frappe
@@ -17,11 +18,21 @@ def _raise_validation(message: str, *_args: object, **_kwargs: object) -> None:
     raise frappe.ValidationError(message)
 
 
+def _stored_rows(
+    credit: list[dict[str, Any]], debit: list[dict[str, Any]], **_kwargs: Any
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    return credit, debit
+
+
 @pytest.fixture(autouse=True)
 def database(monkeypatch: pytest.MonkeyPatch) -> MagicMock:
     db = MagicMock()
     monkeypatch.setattr(frappe, "db", db)
     monkeypatch.setattr(frappe, "log_error", MagicMock())
+    monkeypatch.setattr(frappe, "has_permission", MagicMock(return_value=True))
+    monkeypatch.setattr(frappe, "get_precision", MagicMock(return_value=2))
+    monkeypatch.setattr(frappe.utils, "now", lambda: "2026-01-01 00:00:00")
+    monkeypatch.setattr(frappe, "session", frappe._dict(user="Administrator"))
     return db
 
 
@@ -55,7 +66,7 @@ def test_account_eligibility_and_adjacent_navigation(database: MagicMock) -> Non
     )
     assert lr._adjacent_account_position("Cash", "previous") == (None, "")
     assert lr.get_adjacent_account("", "previous") is None
-    with patch.object(frappe, "get_all", return_value=[{"name": "Bank"}]) as get_all:
+    with patch.object(frappe, "get_list", return_value=[{"name": "Bank"}]) as get_all:
         assert lr.get_adjacent_account("", "next", "K") == "Bank"
     assert get_all.call_args.kwargs["filters"] == {
         "enable_lettering": 1,
@@ -69,7 +80,9 @@ def test_journal_query_filters_partition_and_enriches_party_names(
 ) -> None:
     monkeypatch.setattr(frappe.local, "qb", MariaDB, raising=False)
     database.get_value.return_value = {"name": "Cash", "enable_lettering": 1}
-    query = lr._journal_entry_query("Cash")
+    permitted = MariaDB.from_(MariaDB.DocType("Journal Entry")).select("name")
+    with patch.object(MariaDB, "get_query", return_value=permitted):
+        query = lr._journal_entry_query("Cash")
     filtered = lr._filter_journal_entries(
         query,
         {
@@ -131,7 +144,11 @@ def test_payload_validation_and_prepare_letter_rules(database: MagicMock) -> Non
     ):
         lr._coerce_items("{")
     assert lr._coerce_items('[{"letter": "A"}]') == [{"letter": "A"}]
-    with patch.object(lr, "validate_sum_of_credit_and_debit"):
+    with (
+        patch.object(lr, "load_selection", side_effect=_stored_rows),
+        patch.object(lr, "_validate_totals"),
+        patch.object(lr, "_validate_lettering_enabled_for_accounts"),
+    ):
         assert (
             lr._prepare_letter_items(
                 [{"letter": ""}], [{"letter": ""}], require_letter=False
@@ -213,7 +230,11 @@ def test_year_counter_locking_and_create_or_update_paths(database: MagicMock) ->
 
 
 def test_remaining_reachable_helper_guards(database: MagicMock) -> None:
-    with patch.object(lr, "validate_sum_of_credit_and_debit"):
+    with (
+        patch.object(lr, "load_selection", side_effect=_stored_rows),
+        patch.object(lr, "_validate_totals"),
+        patch.object(lr, "_validate_lettering_enabled_for_accounts"),
+    ):
         assert lr._prepare_letter_items([{}], [{}])[3] is None
     database.get_value.side_effect = ["20", None]
     assert lr._adjacent_account_position("Cash", "previous") == (
@@ -221,7 +242,7 @@ def test_remaining_reachable_helper_guards(database: MagicMock) -> None:
         "account_number desc",
     )
     assert lr._adjacent_account_position("Missing", "next") == (None, "")
-    with patch.object(frappe, "get_all", return_value=[]):
+    with patch.object(frappe, "get_list", return_value=[]):
         assert lr.get_adjacent_account("", "next") is None
     assert list(lr._chunked(["a", "b"], 0)) == [["a", "b"]]
     assert lr._selected_accounts([{"account": " Cash "}, {"account": ""}], "Bank") == {
@@ -236,10 +257,10 @@ def test_remaining_reachable_helper_guards(database: MagicMock) -> None:
     lr._update_gl_letters([], "A")
     database.get_value.side_effect = None
     database.get_value.return_value = "100"
-    with patch.object(frappe, "get_all", return_value=[{"name": "Bank"}]) as get_all:
+    with patch.object(frappe, "get_list", return_value=[{"name": "Bank"}]) as get_all:
         assert lr.get_adjacent_account("Cash", "next", "K") == "Bank"
     assert get_all.call_args.kwargs["filters"]["account_number"] == [">", "100"]
-    with patch.object(frappe, "get_all", return_value=[]):
+    with patch.object(frappe, "get_list", return_value=[]):
         assert lr.get_adjacent_account("Cash", "next", "K") is None
     database.get_value.return_value = None
     with patch.object(frappe, "get_all") as missing_number_get_all:
@@ -315,24 +336,12 @@ def test_remove_success_validation_and_precision_year_fallbacks(
         database.get_default.return_value = None
         assert lr._resolve_amount_precision("Cash") == 2
 
-    no_locked_rows: list[dict[str, str]] = []
-    database.sql.side_effect = [no_locked_rows, [{"letter": "b"}]]
-    created = MagicMock()
-    created.reset_mock()
-    with patch.object(frappe, "get_doc", return_value=created) as get_doc:
-        assert lr._get_letter_for_year_locked(2026) == "B"
-    assert database.sql.call_count == 2
-    assert database.sql.call_args_list[0].args == (
-        "select letter from `tabLetter Settings` where name=%s for update",
-        ("2026",),
-    )
-    assert database.sql.call_args_list[0].kwargs == {"as_dict": True}
-    assert get_doc.call_args.args[0] == {
-        "doctype": "Letter Settings",
-        "year": 2026,
-        "letter": "A",
-    }
-    created.insert.assert_called_once_with(ignore_permissions=True)
+    database.sql.return_value = [{"letter": "b"}]
+    assert lr._get_letter_for_year_locked(2026) == "B"
+    query, values = database.multisql.call_args.args
+    assert "ON DUPLICATE KEY UPDATE" in query["mariadb"]
+    assert "ON CONFLICT" in query["postgres"]
+    assert values["year"] == 2026
 
 
 def test_lock_existing_missing_and_currency_extract_fallbacks(
@@ -340,11 +349,7 @@ def test_lock_existing_missing_and_currency_extract_fallbacks(
 ) -> None:
     database.sql.return_value = [{"letter": "b"}]
     assert lr._get_letter_for_year_locked(2026) == "B"
-    created = MagicMock()
-    no_locked_rows: list[dict[str, str]] = []
-    database.sql.side_effect = [no_locked_rows, no_locked_rows]
-    with patch.object(frappe, "get_doc", return_value=created):
-        assert lr._get_letter_for_year_locked(2026) == "A"
-    created.insert.assert_called_once_with(ignore_permissions=True)
+    database.sql.return_value = [{"letter": ""}]
+    assert lr._get_letter_for_year_locked(2026) == "A"
     assert lr._account_currency_precision(None) is None
     assert lr._extract_account_from_items([{"account": " Cash "}], [{}]) == "Cash"

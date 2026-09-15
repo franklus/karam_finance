@@ -1,0 +1,18 @@
+rules:
+  - id: frappe-python-module-too-many-lines
+    languages: [generic]
+    severity: ERROR
+    message: >-
+      Python modules must not exceed 1,000 physical lines, including comments
+      and blank lines. Split this module into cohesive responsibilities.
+    metadata:
+      origin: custom
+      category: maintainability
+      confidence: HIGH
+      technology: [frappe]
+    paths:
+      include: ["*.py"]
+    # Count complete lines, then report only the first character of line 1001.
+    # A terminal newline ends a line; it does not create another physical line.
+    # Treat CRLF as one indivisible newline; also accept LF and legacy CR.
+    pattern-regex: '\A(?:[^\r\n]*(?>\r\n?|\n)){1000}\K[\s\S]'

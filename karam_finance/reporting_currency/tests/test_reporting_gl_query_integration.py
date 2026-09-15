@@ -62,9 +62,23 @@ class TestReportingGLQueryIntegration(IntegrationTestCase):
                 (self.eur, "2025-12-31", "3.0002"),
             )
         ):
+            # A synced fixture must have a real source entry for permission checks.
+            self._store(
+                "GL Entry",
+                f"SOURCE-{self.token}-{index}",
+                company=self.company,
+                account=account,
+                posting_date=day,
+                debit=debit,
+                credit=0,
+                account_currency="EUR" if account == self.eur else "USD",
+                docstatus=1,
+                is_cancelled=0,
+            )
             self._store(
                 "Reporting Currency GLE",
                 f"QUERY-{self.token}-{index}",
+                gl_entry=f"SOURCE-{self.token}-{index}",
                 company=self.company,
                 account=account,
                 posting_date=day,

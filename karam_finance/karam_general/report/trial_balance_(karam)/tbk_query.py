@@ -9,6 +9,8 @@ from erpnext.accounts.report.utils import convert_to_presentation_currency, get_
 from frappe.query_builder.functions import Sum
 from frappe.utils import flt
 
+from karam_finance.common.ledger_permissions import apply_gl_permissions
+
 from .tbk_conditions import apply_gl_filters
 
 ACCOUNT_CURRENCY_FIELDS = (
@@ -57,6 +59,7 @@ def get_period_balances(
     if not flt(filters.get("with_period_closing_entry_for_current_period")):
         query = query.where(gl_entry.voucher_type != "Period Closing Voucher")
 
+    query = apply_gl_permissions(query, gl_entry)
     query = apply_gl_filters(
         query,
         gl_entry,

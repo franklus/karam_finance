@@ -3,14 +3,18 @@
 from __future__ import annotations
 
 from datetime import date
+from importlib import import_module
 from types import SimpleNamespace
-from typing import Any
+from typing import Any, override
 from unittest import TestCase
 from unittest.mock import Mock, patch
 
 import frappe
 from frappe.query_builder.builder import MariaDB, Table
 from pypika.queries import QueryBuilder
+
+from karam_finance import hooks
+from karam_finance.reporting_currency import ledger_lock
 
 from . import conversion, data_fetch, doe, orchestrator, phases, utils, validation
 
@@ -120,7 +124,9 @@ class TestConversionContracts(TestCase):
             "reporting_currency": "USD",
             "currency_exchange": None,
             "date": None,
-            "exchange_rate": 1,
+            "exchange_rate": 0,
+            "source_exchange_rate": 1,
+            "exchange_rate_application": "",
             "cost_center": "Main - K",
             "project": "Project-1",
             "finance_book": "Standard",
@@ -253,7 +259,8 @@ class TestDataFetchContracts(TestCase):
             "`credit`,`credit_in_transaction_currency`,`cost_center`,`project`,"
             "`finance_book`,`company`,`is_opening`,`is_advance`,`to_rename`,"
             "`is_cancelled`,`remarks`,`modified`,`docstatus` FROM `GL Entry` "
-            "WHERE `docstatus`=1 ORDER BY `posting_date`,`creation`"
+            "WHERE `docstatus`=1 AND COALESCE(`is_cancelled`,0)=0 "
+            "ORDER BY `posting_date`,`creation`"
         )
 
     def test_cancelled_fetch_and_delete_bind_names_and_report_actual_count(
@@ -287,12 +294,18 @@ class TestDataFetchContracts(TestCase):
             frappe_mock.db = database
             assert data_fetch.delete_rc_gle_for_cancelled_gl_entries([], False) == 0
             database.sql.assert_not_called()
-            database.sql.side_effect = [None, [(2,)]]
+            no_rows: list[Any] = []
+            database.sql.side_effect = [[("ORPHAN-1",), ("ORPHAN-2",)], None, no_rows]
             assert data_fetch.cleanup_orphaned_rc_gle_records() == 2
         assert (
             "rc.manual_entry = 0 OR rc.manual_entry IS NULL"
-            in database.sql.call_args_list[-2].args[0]
+            in database.sql.call_args_list[0].args[0]
         )
+        assert (
+            "rc.reporting_doe = 0 OR rc.reporting_doe IS NULL"
+            in database.sql.call_args_list[0].args[0]
+        )
+        database.commit.assert_not_called()
 
     def test_cancelled_fetch_without_timestamp_has_exact_base_filter_and_fields(
         self,
@@ -320,7 +333,8 @@ class TestDataFetchContracts(TestCase):
 
     def test_zero_orphan_cleanup_count_does_not_log(self) -> None:
         database = Mock()
-        database.sql.side_effect = [None, [(0,)]]
+        no_rows: list[Any] = []
+        database.sql.side_effect = [no_rows]
         logger = Mock()
         with patch.object(data_fetch, "frappe") as frappe_mock:
             frappe_mock.db = database
@@ -330,6 +344,25 @@ class TestDataFetchContracts(TestCase):
 
 
 class TestOrchestratorContracts(TestCase):
+    orchestrator_lock_mock: Mock
+
+    @override
+    def setUp(self) -> None:
+        # Native lock behaviour is exercised by separate-connection integration tests.
+        for target in (ledger_lock, orchestrator):
+            lock_patch = patch.object(
+                target,
+                "hold_ledger_lock",
+                side_effect=lambda: Mock(
+                    database=orchestrator.frappe.db,
+                    scopes=0,
+                ),
+            )
+            lock_mock = lock_patch.start()
+            if target is orchestrator:
+                self.orchestrator_lock_mock = lock_mock
+            self.addCleanup(lock_patch.stop)
+
     def test_delete_all_preserves_manual_entries_resets_both_watermarks_and_commits(
         self,
     ) -> None:
@@ -352,7 +385,11 @@ class TestOrchestratorContracts(TestCase):
         self,
     ) -> None:
         database = Mock()
-        database.get_value.side_effect = [None, "RC-old"]
+        database.get_value.side_effect = [
+            None,
+            None,
+            frappe._dict(name="RC-old", manual_entry=0, reporting_doe=0),
+        ]
         with (
             patch.object(orchestrator, "frappe") as frappe_mock,
             patch.object(orchestrator, "now", return_value="now"),
@@ -373,7 +410,9 @@ class TestOrchestratorContracts(TestCase):
 
     def test_gl_rename_uses_hash_fallback_for_linked_record(self) -> None:
         database = Mock()
-        database.get_value.return_value = "RC-old"
+        database.get_value.return_value = frappe._dict(
+            name="RC-old", manual_entry=0, reporting_doe=0
+        )
         with (
             patch.object(orchestrator, "frappe") as frappe_mock,
             patch.object(orchestrator, "now", return_value="now"),
@@ -398,6 +437,25 @@ class TestOrchestratorContracts(TestCase):
         assert update.call_args_list[0].args == ("old-doc", "new-doc")
         assert update.call_args_list[1].args == ("old-hook", "new-hook")
 
+    def test_gl_rename_handlers_acquire_the_shared_ledger_lock(self) -> None:
+        with patch.object(orchestrator, "_update_rc_gle_for_renamed_gl_entry"):
+            orchestrator.on_gl_entry_before_rename(
+                object(), "before_rename", "old-doc", "new-doc"
+            )
+            orchestrator.on_gl_entry_rename(
+                object(), "after_rename", "old-doc", "new-doc"
+            )
+            orchestrator.on_gle_rename_hook(newname="new-hook", oldname="old-hook")
+        assert self.orchestrator_lock_mock.call_count == 3
+
+    def test_registered_gl_before_rename_hook_resolves_to_orchestrator(self) -> None:
+        hook_path = hooks.doc_events["GL Entry"]["before_rename"]
+        assert isinstance(hook_path, str)
+        module_name, function_name = hook_path.rsplit(".", 1)
+        assert getattr(import_module(module_name), function_name) is (
+            orchestrator.on_gl_entry_before_rename
+        )
+
     def test_sync_returns_deletion_stats_when_validation_has_no_source_rows(
         self,
     ) -> None:
@@ -417,6 +475,9 @@ class TestOrchestratorContracts(TestCase):
                 "run_deletion_phase",
                 return_value={"deleted_cancelled": 2, "deleted_orphaned": 3},
             ),
+            patch.object(
+                orchestrator, "run_insertion_phase", return_value={"inserted": 0}
+            ),
             patch.object(orchestrator, "now", return_value="2026-01-01 00:00:00"),
             patch.object(orchestrator, "publish_sync_progress"),
         ):
@@ -429,17 +490,28 @@ class TestOrchestratorContracts(TestCase):
 
 
 class TestUncoveredSyncContracts(TestCase):
+    @override
+    def setUp(self) -> None:
+        # Native lock behaviour is exercised by separate-connection integration tests.
+        for target in (ledger_lock, orchestrator):
+            lock_patch = patch.object(
+                target,
+                "hold_ledger_lock",
+                side_effect=lambda: Mock(
+                    database=orchestrator.frappe.db,
+                    scopes=0,
+                ),
+            )
+            lock_patch.start()
+            self.addCleanup(lock_patch.stop)
+
     def test_validation_uses_cached_default_currency_without_company_lookup(
         self,
     ) -> None:
         gl_entries = [{"name": "GLE-1", "company": "Karam"}]
         cached_coverage = {"USD": True}
         with (
-            patch.object(
-                phases,
-                "_initial_sync_mode",
-                return_value=(True, "Incremental Sync", "watermark"),
-            ),
+            patch.object(phases, "_validate_manual_source_links"),
             patch.object(phases, "fetch_gl_entries", return_value=gl_entries) as fetch,
             patch.object(phases, "_default_currency_for_entries") as company_currency,
             patch.object(phases, "validate_currency_exchange_coverage") as validate,
@@ -456,26 +528,21 @@ class TestUncoveredSyncContracts(TestCase):
         assert result == (
             gl_entries,
             "LBP",
-            True,
-            "Incremental Sync",
+            False,
+            "Full Sync",
             cached_coverage,
-            "watermark",
+            None,
         )
-        fetch.assert_called_once_with(last_sync_timestamp="watermark")
+        fetch.assert_called_once_with(last_sync_timestamp=None)
         company_currency.assert_not_called()
         validate.assert_not_called()
 
-    def test_validation_exits_when_incremental_fetch_and_source_table_are_empty(
+    def test_validation_exits_when_full_source_table_is_empty(
         self,
     ) -> None:
         database = Mock()
         database.count.return_value = 0
         with (
-            patch.object(
-                phases,
-                "_initial_sync_mode",
-                return_value=(True, "Incremental Sync", "watermark"),
-            ),
             patch.object(phases, "fetch_gl_entries", return_value=[]) as fetch,
             patch.object(phases, "_default_currency_for_entries") as company_currency,
             patch.object(phases, "validate_currency_exchange_coverage") as validate,
@@ -486,15 +553,13 @@ class TestUncoveredSyncContracts(TestCase):
             assert phases.run_validation_phase("event", "user", "USD", "last-sync") == (
                 [],
                 "",
-                True,
-                "Incremental Sync",
+                False,
+                "Full Sync",
                 {},
-                "watermark",
+                None,
             )
-        fetch.assert_called_once_with(last_sync_timestamp="watermark")
-        database.count.assert_called_once_with(
-            phases.DOCTYPE_GL_ENTRY, {"docstatus": 1}
-        )
+        fetch.assert_called_once_with(last_sync_timestamp=None)
+        database.count.assert_not_called()
         company_currency.assert_not_called()
         validate.assert_not_called()
         assert progress.call_args_list[-1].args == (
@@ -561,33 +626,6 @@ class TestUncoveredSyncContracts(TestCase):
             {"last_sync_timestamp": "watermark", "last_ce_sync_timestamp": "watermark"},
             update_modified=False,
         )
-
-    def test_initial_sync_rebuilds_empty_target_and_when_exchange_rates_changed(
-        self,
-    ) -> None:
-        database = Mock()
-        database.exists.side_effect = [False]
-        with patch.object(phases, "frappe") as frappe_mock:
-            frappe_mock.db = database
-            frappe_mock.logger.return_value = Mock()
-            assert phases._initial_sync_mode("cutoff", "event", None) == (
-                False,
-                "Full Sync (rebuild)",
-                None,
-            )
-        database.exists.side_effect = [True, True]
-        with (
-            patch.object(phases, "frappe") as frappe_mock,
-            patch.object(phases, "publish_sync_progress") as progress,
-        ):
-            frappe_mock.db = database
-            frappe_mock.logger.return_value = Mock()
-            assert phases._initial_sync_mode("cutoff", "event", "user") == (
-                False,
-                "Full Sync (CE updated)",
-                None,
-            )
-        progress.assert_called_once()
 
     def test_insert_and_delete_chunk_boundaries_preserve_order_and_report_progress(
         self,
@@ -763,7 +801,7 @@ class TestUncoveredSyncContracts(TestCase):
             utils.export_temporal_validation_entries_csv("key", "LBP", "USD")
         assert download.call_args.args[1][0][0] == "GLE-1"
 
-    def test_enqueue_rejects_permission_and_handles_no_data_before_queueing(
+    def test_enqueue_rejects_permission_but_queues_cleanup_for_empty_source(
         self,
     ) -> None:
         with (
@@ -776,9 +814,6 @@ class TestUncoveredSyncContracts(TestCase):
         frappe_mock.enqueue.assert_not_called()
         frappe_mock.db.sql.assert_not_called()
 
-        database = Mock()
-        no_pending_entries: list[tuple[int]] = []
-        database.sql.side_effect = [[(1,)], no_pending_entries]
         with (
             patch.object(orchestrator, "frappe") as frappe_mock,
             patch.object(
@@ -790,27 +825,14 @@ class TestUncoveredSyncContracts(TestCase):
             patch.object(orchestrator, "get_company_default_currency") as currency,
         ):
             frappe_mock.has_permission.return_value = True
-            frappe_mock.db = database
-            assert orchestrator.enqueue_reporting_currency_sync() == {
-                "status": "no_data"
-            }
-        frappe_mock.enqueue.assert_not_called()
+            frappe_mock.db.sql.return_value = list[dict[str, Any]]()
+            frappe_mock.enqueue.return_value = SimpleNamespace(id="cleanup-job")
+            result = orchestrator.enqueue_reporting_currency_sync()
+        assert result["job_id"] == "cleanup-job"
+        assert "progress_event" in result and "done_event" in result
+        frappe_mock.enqueue.assert_called_once()
+        assert frappe_mock.enqueue.call_args.kwargs["cached_currency_coverage"] is None
         currency.assert_not_called()
-        with (
-            patch.object(orchestrator, "frappe") as frappe_mock,
-            patch.object(
-                orchestrator,
-                "validate_settings",
-                return_value={"reporting_currency": "USD"},
-            ),
-            patch.object(orchestrator, "now", return_value="cutoff"),
-        ):
-            frappe_mock.has_permission.return_value = True
-            frappe_mock.db.sql.return_value = [(0,)]
-            assert orchestrator.enqueue_reporting_currency_sync() == {
-                "status": "no_data"
-            }
-        frappe_mock.enqueue.assert_not_called()
 
     def test_background_job_commits_success_and_rolls_back_failure(self) -> None:
         database = Mock()
@@ -836,7 +858,7 @@ class TestUncoveredSyncContracts(TestCase):
         ):
             frappe_mock.db = database
             orchestrator.run_reporting_currency_sync_job("event", "done")
-        database.commit.assert_called_once()
+        assert database.commit.call_count == 2
         database.rollback.assert_not_called()
         assert frappe_mock.publish_realtime.call_args.kwargs["message"] == {
             "status": "success",
@@ -862,7 +884,7 @@ class TestUncoveredSyncContracts(TestCase):
         ):
             frappe_mock.db = database
             orchestrator.run_reporting_currency_sync_job("event", "done")
-        database.commit.assert_called_once()
+        assert database.commit.call_count == 2
         database.rollback.assert_not_called()
         assert (
             frappe_mock.publish_realtime.call_args.kwargs["message"]["status"]
@@ -889,7 +911,7 @@ class TestUncoveredSyncContracts(TestCase):
         ):
             frappe_mock.db = database
             orchestrator.run_reporting_currency_sync_job("event", "done")
-        database.commit.assert_called_once()
+        assert database.commit.call_count == 2
         database.rollback.assert_not_called()
         assert frappe_mock.publish_realtime.call_args.kwargs["message"]["status"] == (
             "partial_success"

@@ -22,7 +22,6 @@ erpnext = ">=16.0.0,<17.0.0"
 [tool.bench.dev-dependencies]
 complexipy = "==8.0.0"
 coverage = "==7.15.4"
-pylint = "==4.0.8"
 pyrefly = "==1.2.0"
 ruff = "==0.16.2"
 vulture = "==2.16"
@@ -31,7 +30,6 @@ vulture = "==2.16"
 dev = [
     "complexipy==8.0.0",
     "coverage==7.15.4",
-    "pylint==4.0.8",
     "pyrefly==1.2.0",
     "ruff==0.16.2",
     "vulture==2.16",
@@ -140,21 +138,6 @@ max-complexity-allowed = 10
 snapshot-ignore = true
 ignore-complexity = false
 no-ignore = true
-
-# Pylint supplies only the physical module-size check; Ruff owns linting.
-[tool.pylint.main]
-recursive = true
-persistent = false
-
-[tool.pylint.messages_control]
-disable = ["all"]
-enable = ["too-many-lines"]
-
-[tool.pylint.format]
-max-module-lines = 1000
-
-[tool.pylint.reports]
-score = false
 
 [tool.vulture]
 paths = ["karam_finance", "tools"]
