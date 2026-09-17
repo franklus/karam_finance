@@ -252,18 +252,21 @@ def get_item_price_mismatch_context(  # noqa: PLR0913
     if not valid_from:
         return {"enabled": True, "valid_from": None}
 
-    if price_list_rate and find_item_price_with_matching_rate(
-        item_code=item_code,
-        price_list=price_list,
-        currency=currency,
-        stock_uom=stock_uom,
-        price_list_rate=price_list_rate,
-        customer=customer,
-        supplier=supplier,
-        batch_no=batch_no,
-        qty=qty,
-        valid_from=valid_from,
+    if price_list_rate and (
+        matching_item_price := find_item_price_with_matching_rate(
+            item_code=item_code,
+            price_list=price_list,
+            currency=currency,
+            stock_uom=stock_uom,
+            price_list_rate=price_list_rate,
+            customer=customer,
+            supplier=supplier,
+            batch_no=batch_no,
+            qty=qty,
+            valid_from=valid_from,
+        )
     ):
+        _check_item_price_read_permission(matching_item_price)
         return {"enabled": False, "price_exists": True}
 
     existing_item_price = find_item_price_with_same_valid_from(
@@ -278,6 +281,7 @@ def get_item_price_mismatch_context(  # noqa: PLR0913
         qty=qty,
     )
 
+    _check_item_price_read_permission(existing_item_price)
     return _build_item_price_mismatch_context(
         existing_item_price=existing_item_price,
         settings=settings,
@@ -286,6 +290,17 @@ def get_item_price_mismatch_context(  # noqa: PLR0913
         customer=customer,
         supplier=supplier,
     )
+
+
+def _check_item_price_read_permission(item_price: ItemPriceRecord | None) -> None:
+    """Reject unreadable matches without revealing their identity or rate."""
+    if item_price and not frappe.has_permission(
+        "Item Price", "read", doc=item_price["name"]
+    ):
+        frappe.throw(
+            _("You do not have permission to read Item Price records in this scope."),
+            frappe.PermissionError,
+        )
 
 
 def _build_item_price_mismatch_context(
@@ -515,6 +530,7 @@ def _apply_existing_item_price_policy(
     effective_rate: float,
 ) -> dict[str, Any] | None:
     """Apply configured same-date Item Price behaviour."""
+    _check_item_price_read_permission(existing_item_price)
     if flt(existing_item_price.get("price_list_rate")) == effective_rate:
         return {
             "created": False,

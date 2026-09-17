@@ -4,8 +4,9 @@ from __future__ import annotations
 
 import importlib
 from datetime import date
+from types import SimpleNamespace
 from typing import TYPE_CHECKING
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 from frappe import _dict
 from frappe.tests.utils import FrappeTestCase
@@ -30,7 +31,8 @@ class TestBankReconciliationStatementReport(FrappeTestCase):
     def test_execute_without_account_returns_empty_data(self) -> None:
         module = _load_module()
 
-        columns, data = module.execute(_dict())
+        columns, data, *metadata = module.execute(_dict())
+        assert metadata == [None, None, None, True]
 
         assert data == []
         assert any(column["fieldname"] == "party_name" for column in columns)
@@ -120,13 +122,22 @@ class TestBankReconciliationStatementReport(FrappeTestCase):
 
         with (
             patch.object(module, "get_entries", return_value=outstanding),
+            patch.object(
+                module.frappe,
+                "get_doc",
+                return_value=SimpleNamespace(
+                    check_permission=MagicMock(),
+                    get={"company": "Test Company", "is_group": False}.get,
+                ),
+            ),
             patch.object(module, "get_balance_on", return_value=1000),
             patch.object(
                 module, "get_amounts_not_reflected_in_system", return_value=-25
             ),
             patch.object(module.frappe, "get_cached_value", return_value="USD"),
         ):
-            _, rows = module.execute(filters)
+            _, rows, *metadata = module.execute(filters)
+            assert metadata == [None, None, None, True]
 
         calculated = rows[-1]
         assert calculated["payment_entry"] == "Calculated Bank Statement balance"

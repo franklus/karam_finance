@@ -1,31 +1,24 @@
-"""Backfill GL Entry.letter from Journal Entry Account rows."""
+"""Backfill only provable legacy Journal Entry letter mappings."""
 
 from __future__ import annotations
 
 import frappe
 
+from karam_finance.letter_reconciliation.legacy_mapping import legacy_letter_mappings
+
 
 def execute() -> None:
-    """Fill missing GL Entry letters for Journal Entries."""
-    frappe.db.sql(
-        """
-        update `tabGL Entry` gl
-        inner join (
-            select
-                parent,
-                account,
-                max(letter) as letter,
-                count(distinct letter) as letter_count
-            from `tabJournal Entry Account`
-            where letter is not null and letter != ''
-            group by parent, account
-        ) jea
-            on gl.voucher_no = jea.parent
-            and gl.account = jea.account
-        set gl.letter = jea.letter
-        where gl.voucher_type = 'Journal Entry'
-          and (gl.letter is null or gl.letter = '')
-          and (gl.voucher_detail_no is null or gl.voucher_detail_no = '')
-          and jea.letter_count = 1
-        """
-    )
+    """Leave ambiguous, unlettered and already-lettered legacy rows unchanged."""
+    after = ""
+    while rows := legacy_letter_mappings(after=after):
+        updates = {
+            row.name: {"letter": row.source_letter}
+            for row in rows
+            if not row.letter
+            and row.letter_count == 1
+            and row.source_letter
+            and row.source_count
+        }
+        if updates:
+            frappe.db.bulk_update("GL Entry", updates)
+        after = rows[-1].name

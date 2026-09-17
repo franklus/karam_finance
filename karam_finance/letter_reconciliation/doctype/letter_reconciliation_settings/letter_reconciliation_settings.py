@@ -21,11 +21,23 @@ from .historical_gl_rebuild import (
     ReasonSummaryGroup,
     RebuildFilters,
     RebuildPreview,
-    backfill_reference_detail_no_bulk,
     build_reason_summary_groups,
     build_rebuild_preview,
     get_validated_rebuild_filters,
     rebuild_single_voucher,
+    validate_rebuild_ledger_mode,
+)
+from .rebuild_guard import (
+    acquire_rebuild_guard,
+    rebuild_execution,
+    release_rebuild_guard,
+    renew_rebuild_guard,
+)
+from .rebuild_permissions import (
+    as_rebuild_user,
+    check_rebuild_batch,
+    check_rebuild_journals,
+    check_rebuild_scope,
 )
 
 
@@ -45,7 +57,6 @@ class LetterReconciliationSettings(Document):  # noqa: V102 - Frappe DocType con
         last_migration_user: DF.Link | None  # noqa: V107 - stored DocType field loaded by Frappe and displayed in Desk.
 
 
-_REBUILD_CACHE_KEY = "historical_gl_rebuild_running"
 _REBUILD_STATE_PREFIX = "historical_gl_rebuild_state:"
 _CACHE_TTL = 4 * 60 * 60
 _REBUILD_BATCH_SIZE = 200
@@ -112,6 +123,7 @@ def preview_historical_gl_rebuild() -> PublicRebuildPreview:
     frappe.only_for(["System Manager", "Accounts Manager"])
 
     filters = get_validated_rebuild_filters()
+    check_rebuild_scope(filters["company"])
     preview = build_rebuild_preview(filters)
     _update_preview_audit(frappe.session.user)
     return _public_preview(preview)
@@ -121,19 +133,29 @@ def preview_historical_gl_rebuild() -> PublicRebuildPreview:
 def enqueue_historical_gl_rebuild() -> EnqueueRebuildResponse:
     """Queue the subset-based repost rebuild and return realtime event names."""
     frappe.only_for(["System Manager", "Accounts Manager"])
+    validate_rebuild_ledger_mode()
 
-    if cast("RedisWrapper", frappe.cache).get_value(_REBUILD_CACHE_KEY):
+    run_id = frappe.generate_hash(length=12)
+    if not acquire_rebuild_guard(run_id):
         frappe.throw(_running_rebuild_message())
+    try:
+        return _enqueue_owned_rebuild(run_id)
+    except Exception:
+        _clear_rebuild_state(run_id)
+        raise
 
+
+def _enqueue_owned_rebuild(run_id: str) -> EnqueueRebuildResponse:
     filters = get_validated_rebuild_filters()
+    check_rebuild_scope(filters["company"], write=True)
     preview = build_rebuild_preview(filters)
     eligible_vouchers = [
         voucher["voucher_no"] for voucher in preview["eligible"]["items"]
     ]
     if not eligible_vouchers:
         frappe.throw(_no_eligible_vouchers_message())
+    check_rebuild_journals(eligible_vouchers, write=True)
 
-    run_id = frappe.generate_hash(length=12)
     progress_event = f"historical_gl_rebuild_progress_{frappe.generate_hash(length=8)}"
     done_event = f"historical_gl_rebuild_done_{frappe.generate_hash(length=8)}"
     state: RebuildRunState = {
@@ -151,16 +173,8 @@ def enqueue_historical_gl_rebuild() -> EnqueueRebuildResponse:
         "failures": [],
     }
 
-    cast("RedisWrapper", frappe.cache).set_value(
-        _REBUILD_CACHE_KEY, run_id, expires_in_sec=_CACHE_TTL
-    )
     _save_rebuild_state(state)
-
-    try:
-        _enqueue_rebuild_batch(run_id)
-    except Exception:
-        _clear_rebuild_state(run_id)
-        raise
+    _enqueue_rebuild_batch(run_id)
 
     return {
         "progress_event": progress_event,
@@ -170,42 +184,69 @@ def enqueue_historical_gl_rebuild() -> EnqueueRebuildResponse:
 
 def run_historical_gl_rebuild_job(run_id: str) -> None:
     """Process one chained background batch of the historical rebuild."""
+    continuation = None
+    with rebuild_execution() as acquired:
+        if acquired:
+            continuation = _run_owned_rebuild_job(run_id)
+    # A fast queue consumer must not encounter the previous batch's execution lock.
+    if continuation:
+        try:
+            _enqueue_rebuild_batch(run_id)
+        except Exception:  # noqa: BLE001 - preserve the worker's fatal queue-failure boundary.
+            _fail_rebuild_run(continuation)
+
+
+def _run_owned_rebuild_job(run_id: str) -> RebuildRunState | None:
     state = _get_rebuild_state(run_id)
     if not state:
         _clear_orphaned_rebuild_lock(run_id)
-        return
+        return None
+
+    if not renew_rebuild_guard(run_id):
+        _clear_rebuild_state(run_id)
+        return None
 
     try:
-        total = len(state["eligible_vouchers"])
-        if not total:
-            frappe.throw(_no_eligible_vouchers_message())
-
-        start_index = state["next_index"]
-        end_index = min(start_index + _REBUILD_BATCH_SIZE, total)
-        batch_vouchers = state["eligible_vouchers"][start_index:end_index]
-        backfill_reference_detail_no_bulk(batch_vouchers)
-
-        for absolute_index, voucher_no in enumerate(
-            batch_vouchers, start=start_index + 1
-        ):
-            _rebuild_voucher_at_index(state, voucher_no, absolute_index)
-
-        if state["next_index"] < total:
-            _publish_progress(
-                state["progress_event"],
-                state["user"],
-                int((state["next_index"] / total) * 100),
-                message=_("Queued the next rebuild batch…"),
-            )
-            _enqueue_rebuild_batch(run_id)
-            return
-
-        _finalise_rebuild_run(state)
+        with as_rebuild_user(state["user"]):
+            if _run_historical_rebuild_batch(state):
+                return state
     except Exception:  # noqa: BLE001 - worker boundary rolls back and reports fatal failure.
-        frappe.db.rollback()
-        frappe.log_error(frappe.get_traceback(), "Historical GL rebuild failed")
-        _publish_rebuild_failure(state)
-        _clear_rebuild_state(run_id)
+        _fail_rebuild_run(state)
+    return None
+
+
+def _fail_rebuild_run(state: RebuildRunState) -> None:
+    frappe.db.rollback()
+    frappe.log_error(frappe.get_traceback(), "Historical GL rebuild failed")
+    _publish_rebuild_failure(state)
+    _clear_rebuild_state(state["run_id"])
+
+
+def _run_historical_rebuild_batch(state: RebuildRunState) -> bool:
+    validate_rebuild_ledger_mode()
+    total = len(state["eligible_vouchers"])
+    if not total:
+        frappe.throw(_no_eligible_vouchers_message())
+
+    start_index = state["next_index"]
+    end_index = min(start_index + _REBUILD_BATCH_SIZE, total)
+    batch_vouchers = state["eligible_vouchers"][start_index:end_index]
+    check_rebuild_batch(batch_vouchers, state["filters"])
+
+    for absolute_index, voucher_no in enumerate(batch_vouchers, start=start_index + 1):
+        _rebuild_voucher_at_index(state, voucher_no, absolute_index)
+
+    if state["next_index"] < total:
+        _publish_progress(
+            state["progress_event"],
+            state["user"],
+            int((state["next_index"] / total) * 100),
+            message=_("Queued the next rebuild batch…"),
+        )
+        return True
+
+    _finalise_rebuild_run(state)
+    return False
 
 
 def _rebuild_voucher_at_index(
@@ -229,10 +270,7 @@ def _rebuild_voucher_at_index(
     frappe.db.savepoint(savepoint)
 
     try:
-        rebuild_single_voucher(
-            voucher_no,
-            reference_detail_backfilled=True,
-        )
+        rebuild_single_voucher(voucher_no)
     except Exception as exc:  # noqa: BLE001 - isolate a failed voucher and continue the batch.
         frappe.db.rollback(save_point=savepoint)
         frappe.log_error(
@@ -345,11 +383,15 @@ def _enqueue_rebuild_batch(run_id: str) -> None:
 
 
 def _get_rebuild_state(run_id: str) -> RebuildRunState | None:
-    state = cast("RedisWrapper", frappe.cache).get_value(_get_rebuild_state_key(run_id))
+    state = cast("RedisWrapper", frappe.cache).get_value(
+        _get_rebuild_state_key(run_id), use_local_cache=False
+    )
     return state or None
 
 
 def _save_rebuild_state(state: RebuildRunState) -> None:
+    if not renew_rebuild_guard(state["run_id"]):
+        frappe.throw(_("Historical rebuild no longer owns its run guard."))
     cast("RedisWrapper", frappe.cache).set_value(
         _get_rebuild_state_key(state["run_id"]),
         state,
@@ -358,15 +400,12 @@ def _save_rebuild_state(state: RebuildRunState) -> None:
 
 
 def _clear_rebuild_state(run_id: str) -> None:
-    cast("RedisWrapper", frappe.cache).delete_value(_REBUILD_CACHE_KEY)
+    release_rebuild_guard(run_id)
     cast("RedisWrapper", frappe.cache).delete_value(_get_rebuild_state_key(run_id))
 
 
 def _clear_orphaned_rebuild_lock(run_id: str) -> None:
-    locked_run_id = cast("RedisWrapper", frappe.cache).get_value(_REBUILD_CACHE_KEY)
-    if locked_run_id == run_id:
-        cast("RedisWrapper", frappe.cache).delete_value(_REBUILD_CACHE_KEY)
-    cast("RedisWrapper", frappe.cache).delete_value(_get_rebuild_state_key(run_id))
+    _clear_rebuild_state(run_id)
 
 
 def _get_rebuild_state_key(run_id: str) -> str:

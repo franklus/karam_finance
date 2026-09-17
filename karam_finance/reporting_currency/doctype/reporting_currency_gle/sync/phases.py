@@ -24,6 +24,7 @@ from .data_fetch import (
     fetch_gl_entries,
 )
 from .exchange_rates import build_exchange_rate_timeline, validate_temporal_coverage
+from .naming import get_synced_rc_gle_name
 from .utils import publish_sync_progress
 from .validation import (
     get_company_default_currency,
@@ -35,8 +36,6 @@ from .validation import (
 # ============================================================================
 
 # DocType names
-DOCTYPE_GL_ENTRY = "GL Entry"
-DOCTYPE_CURRENCY_EXCHANGE = "Currency Exchange"
 DOCTYPE_RC_GLE = "Reporting Currency GLE"
 DOCTYPE_RC_SETTINGS = "Reporting Currency Settings"
 
@@ -54,7 +53,6 @@ PROGRESS_COMPLETE = 100
 
 # Processing constants
 PROGRESS_UPDATE_FREQUENCY = 100
-GLE_NAME_MIN_PARTS = 4  # Minimum parts in GL Entry name (ACC-GLE-{YYYY}-{#####})
 
 
 # ============================================================================
@@ -80,14 +78,14 @@ def run_validation_phase(  # noqa: PLR0913, PLR0917
 ]:
     """Phase 1: Validation & Parameter Establishment.
 
-    Validates settings, fetches all GL entries, determines sync mode, and
+    Validates settings, fetches all GL entries for a full sync, and
     validates currency coverage.
 
     Args:
         progress_event: Event ID for realtime progress updates
         user: User ID for realtime messaging
         reporting_currency: Target reporting currency
-        last_sync_timestamp: Timestamp of last sync (None for full sync)
+        last_sync_timestamp: Retained for caller compatibility; never limits a sync
         cached_currency_coverage: Pre-computed coverage from foreground
         cached_default_currency: Company default currency from foreground
 
@@ -95,9 +93,12 @@ def run_validation_phase(  # noqa: PLR0913, PLR0917
         Tuple of (gl_entries, default_currency, is_incremental, sync_mode,
         currency_coverage, effective_last_sync)
     """
-    is_incremental, sync_mode, effective_last_sync = _initial_sync_mode(
-        last_sync_timestamp, progress_event, user
-    )
+    # Every normal sync must refresh historical amounts after rate edits or deletions.
+    # Retain the phase signature and result shape for existing callers.
+    del last_sync_timestamp
+    is_incremental = False
+    sync_mode = _("Full Sync")
+    effective_last_sync = None
 
     # Fetch all GL entries with full schema (35 fields) for processing
     publish_sync_progress(
@@ -109,29 +110,14 @@ def run_validation_phase(  # noqa: PLR0913, PLR0917
 
     gl_entries = fetch_gl_entries(last_sync_timestamp=effective_last_sync)
 
-    # If incremental fetch returned nothing but GL entries exist, fallback to full sync
-    if not gl_entries and effective_last_sync:
-        # Check if any GL entries exist
-        total_gl_count = frappe.db.count(DOCTYPE_GL_ENTRY, {"docstatus": 1})
-
-        if total_gl_count:
-            is_incremental = False
-            effective_last_sync = None
-            sync_mode = _("Full Sync (rebuild)")
-            publish_sync_progress(
-                progress_event,
-                PROGRESS_PHASE1_START,
-                _("Incremental sync found no updates; rerunning as full sync..."),
-                user,
-            )
-            gl_entries = fetch_gl_entries(last_sync_timestamp=None)
-
     if not gl_entries:
         publish_sync_progress(
             progress_event, PROGRESS_COMPLETE, "No GL Entries to process.", user
         )
         # Return empty result tuple to signal early exit
         return ([], "", is_incremental, sync_mode, {}, effective_last_sync)
+
+    _validate_manual_source_links(gl_entries)
 
     # Use cached default currency if available, otherwise get from company
     if cached_default_currency is not None:
@@ -169,6 +155,26 @@ def run_validation_phase(  # noqa: PLR0913, PLR0917
     )
 
 
+def _validate_manual_source_links(gl_entries: list[dict[str, Any]]) -> None:
+    """A manual row owns its link; generation must never replace it implicitly."""
+    names = frappe.get_all(
+        "Reporting Currency GLE",
+        filters={
+            "manual_entry": 1,
+            "gl_entry": ["in", [row["name"] for row in gl_entries]],
+        },
+        pluck="name",
+        limit=5,
+    )
+    if names:
+        frappe.throw(
+            _(
+                "Manual reporting entries already link to source GL entries: {0}. "
+                "Resolve these manual links separately before synchronising."
+            ).format(", ".join(names))
+        )
+
+
 # ============================================================================
 # PHASE 2: DELETION
 # ============================================================================
@@ -185,7 +191,7 @@ def run_deletion_phase(  # noqa: PLR0917
 
     This phase ensures data integrity by:
     1. Removing RC GLE records for cancelled GL entries
-    2. Cleaning up orphaned RC GLE records (GL entries no longer exist)
+    2. Cleaning up remaining snapshots of deleted or cancelled GL entries
 
     Args:
         progress_event: Event name for realtime progress updates
@@ -221,18 +227,17 @@ def run_deletion_phase(  # noqa: PLR0917
             user,
         )
 
-    # Step 2: Cleanup orphaned records
-    # Only run this periodically (during full sync) to avoid performance overhead
-    if not is_incremental:
-        orphaned_count = cleanup_orphaned_rc_gle_records()
-        stats["deleted_orphaned"] = orphaned_count
+    # Physical deletions leave no modified source; also remove old cancellations
+    # that predate the incremental cutoff. Retain the existing stats key for callers.
+    orphaned_count = cleanup_orphaned_rc_gle_records()
+    stats["deleted_orphaned"] = orphaned_count
 
-        publish_sync_progress(
-            progress_event,
-            25,
-            f"Cleaned up {orphaned_count} orphaned RC GLE records...",
-            user,
-        )
+    publish_sync_progress(
+        progress_event,
+        25,
+        f"Cleaned up {orphaned_count} obsolete RC GLE records...",
+        user,
+    )
 
     return stats
 
@@ -451,11 +456,8 @@ def run_insertion_phase(  # noqa: PLR0917
     if rc_gle_records:
         stats["inserted"] = _insert_rc_gle_records(rc_gle_records, progress_event, user)
 
-    # Update last sync timestamps for incremental sync
-    # Both timestamps updated atomically to track GL Entry and Currency Exchange changes
-    # The watermark must represent the start of source acquisition, rather than
-    # completion. A row modified while this run is reading or inserting data is
-    # therefore still selected by the next incremental query.
+    # Retain both timestamps as acquisition metadata for existing consumers.
+    # Normal syncs always revisit all source entries regardless of these values.
     current_time = sync_cutoff
     frappe.db.set_single_value(
         DOCTYPE_RC_SETTINGS,
@@ -486,65 +488,11 @@ def _default_currency_for_entries(gl_entries: list[dict[str, Any]]) -> str:
     return get_company_default_currency(company)
 
 
-def _initial_sync_mode(
-    last_sync_timestamp: str | None, progress_event: str, user: str | None
-) -> tuple[bool, str, str | None]:
-    # Determine sync mode based on last_sync_timestamp
-    # If timestamp exists → Incremental (fetch only modified GL entries)
-    # If NULL → Full sync (fetch all GL entries)
-    is_incremental = bool(last_sync_timestamp)
-    sync_mode = _("Incremental Sync") if is_incremental else _("Full Sync")
-    effective_last_sync = last_sync_timestamp if is_incremental else None
-
-    # If RC GLE table is empty, force a full rebuild (after cleanup/schema change)
-    if is_incremental and not frappe.db.exists(DOCTYPE_RC_GLE, {}):
-        is_incremental = False
-        effective_last_sync = None
-        sync_mode = _("Full Sync (rebuild)")
-        frappe.logger().info(
-            "RC GLE table empty but last_sync_timestamp set. "
-            "Falling back to full rebuild."
-        )
-
-    # Check if Currency Exchange records changed since last sync
-    # If exchange rates were modified, force full rebuild to ensure accuracy
-    if is_incremental and last_sync_timestamp:
-        ce_changed = frappe.db.exists(
-            DOCTYPE_CURRENCY_EXCHANGE, {"modified": [">", last_sync_timestamp]}
-        )
-        if ce_changed:
-            is_incremental = False
-            effective_last_sync = None
-            sync_mode = _("Full Sync (CE updated)")
-            frappe.logger().info(
-                "Currency Exchange records modified since last sync. "
-                "Forcing full rebuild."
-            )
-            publish_sync_progress(
-                progress_event,
-                PROGRESS_PHASE1_START,
-                _("Exchange rates updated - rebuilding all records..."),
-                user,
-            )
-
-    return is_incremental, sync_mode, effective_last_sync
-
-
 def _assign_rc_gle_name(record: dict[str, Any]) -> None:
     gl_entry_name = record.get("gl_entry")  # e.g., "ACC-GLE-2021-00005"
 
     if gl_entry_name:
-        # Extract year and number from GL Entry name
-        parts = gl_entry_name.split("-")
-        if len(parts) >= GLE_NAME_MIN_PARTS:
-            # Extract year (parts[2]) and number (parts[3])
-            year = parts[2]
-            number = parts[3]
-            record["name"] = f"KE-RCGLE-{year}-{number}"
-        else:
-            # For hash-based GL Entry names (e.g., "f55e844ed1"),
-            # prefix with RC- for deterministic 1:1 mapping
-            record["name"] = f"RC-{gl_entry_name}"
+        record["name"] = get_synced_rc_gle_name(gl_entry_name)
     else:
         # Should never happen - gl_entry is required field
         frappe.throw(_("GL Entry name is missing for record during RC GLE sync"))
@@ -605,7 +553,8 @@ def _delete_incremental_records(
         # nosemgrep: frappe-n-plus-one-read-in-loop
         frappe.db.sql(
             f"DELETE FROM `tabReporting Currency GLE` "  # noqa: S608
-            f"WHERE gl_entry IN ({placeholders})",
+            f"WHERE gl_entry IN ({placeholders}) "
+            "AND COALESCE(manual_entry, 0) = 0 AND COALESCE(reporting_doe, 0) = 0",
             tuple(chunk),
         )
         total_deleted += len(chunk)

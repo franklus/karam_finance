@@ -28,15 +28,18 @@ from karam_finance.reporting_currency.doctype.reporting_currency_settings.report
     ReportingCurrencySettings,
     validate_doe_exchange_rates,
 )
+from karam_finance.reporting_currency.ledger_lock import (
+    hold_ledger_lock,
+    ledger_operation,
+)
+from karam_finance.reporting_currency.offset_accounts import validate_offset_accounts
 
 from .doe_storage import bulk_insert_doe_records as _bulk_insert_doe_records
+from .utils import get_currency_precision
 from .validation import get_reporting_company
 
 DOCTYPE_RC_GLE = "Reporting Currency GLE"
 DOCTYPE_RC_SETTINGS = "Reporting Currency Settings"
-
-# Threshold for considering amounts as effectively zero
-DOE_ZERO_THRESHOLD = 0.01
 
 # Minimum parts in DOE name (KE-RCDOE-GLE-{YYYY}-{#####})
 DOE_NAME_MIN_PARTS = 4
@@ -133,6 +136,7 @@ def _create_doe_records_for_groups(  # noqa: PLR0913, PLR0917
     """Create DOE pairs for account-level or account-and-party-level groups."""
     records: list[dict[str, Any]] = []
     processed_count = 0
+    precision = get_currency_precision(reporting_currency)
 
     for account_info in account_groups:
         account = account_info["account"]
@@ -162,10 +166,14 @@ def _create_doe_records_for_groups(  # noqa: PLR0913, PLR0917
             account_totals=adjusted_totals,
         )
 
-        if (
-            computed_data is None
-            or abs(computed_data.get("final_amount", 0)) < DOE_ZERO_THRESHOLD
-        ):
+        if computed_data is None:
+            continue
+
+        # Use the same rounded amount for the zero check, both legs and carry-forward.
+        computed_data["final_amount"] = flt(
+            computed_data.get("final_amount", 0), precision
+        )
+        if not computed_data["final_amount"]:
             continue
 
         group_records = _create_doe_records(
@@ -266,104 +274,91 @@ def compute_doe(background: bool = True) -> dict[str, Any]:
 
 
 def _compute_doe_background() -> dict[str, Any]:
-    """Background job for DOE computation.
-
-    This is the main orchestrator that runs all 5 phases.
-    Processes rc_parameters rows sorted by doe_posting_date ascending, computing DOE
-    cumulatively from the beginning until each row's doe_posting_date. DOE records
-    accumulate across rows.
-    """
-    frappe.db.commit()  # nosemgrep — background job
-    company = None
-
+    """Generate DOE under the site lock and publish failures, including contention."""
     try:
-        _publish_progress(0, "Starting DOE computation...")
+        frappe.only_for("System Manager")
+        with ledger_operation():
+            frappe.db.commit()  # nosemgrep — background job owns its transaction
+            return _run_background_doe()
+    except Exception as exc:
+        frappe.log_error(title="DOE Computation Failed", message=frappe.get_traceback())
+        _publish_progress(-1, f"Error: {exc!s}")
+        raise
 
-        # ====================================================================
-        # PHASE 1: VALIDATION & PARAMETER ESTABLISHMENT
-        # ====================================================================
-        _publish_progress(10, "Phase 1: Validating configuration...")
 
-        settings = cast(
-            "ReportingCurrencySettings", frappe.get_single(DOCTYPE_RC_SETTINGS)
-        )
+def _run_background_doe() -> dict[str, Any]:
+    """Validate all parameters before replacing any DOE rows."""
+    _publish_progress(0, "Starting DOE computation...")
 
-        company = get_reporting_company()
+    # ====================================================================
+    # PHASE 1: VALIDATION & PARAMETER ESTABLISHMENT
+    # ====================================================================
+    _publish_progress(10, "Phase 1: Validating configuration...")
 
-        if not company:
-            frappe.throw(_("No RC GLE records found. Please run sync first."))
+    settings = cast("ReportingCurrencySettings", frappe.get_single(DOCTYPE_RC_SETTINGS))
 
-        if not settings.reporting_currency:
-            frappe.throw(_("Reporting Currency is not configured in settings"))
+    company = get_reporting_company()
 
-        if not settings.rc_parameters or len(settings.rc_parameters) == 0:
-            frappe.throw(_("No RC Parameters defined. Please add at least one row."))
+    if not company:
+        frappe.throw(_("No RC GLE records found. Please run sync first."))
 
-        validate_doe_exchange_rates(settings.rc_parameters)
+    if not settings.reporting_currency:
+        frappe.throw(_("Reporting Currency is not configured in settings"))
 
-        rc_gle_count = frappe.db.count(
-            DOCTYPE_RC_GLE, {"company": company, "reporting_doe": 0}
-        )
-        if rc_gle_count == 0:
-            frappe.throw(_("No RC GLE records found. Please run sync first."))
+    if not settings.rc_parameters or len(settings.rc_parameters) == 0:
+        frappe.throw(_("No RC Parameters defined. Please add at least one row."))
 
-        _publish_progress(20, f"Validated. Found {rc_gle_count} RC GLE records.")
+    _validate_doe_parameters(settings.rc_parameters, company)
 
-        # ====================================================================
-        # PHASE 2: FILTER RC GLE RECORDS & SETUP
-        # ====================================================================
-        _publish_progress(25, "Phase 2: Filtering RC GLE records...")
+    rc_gle_count = frappe.db.count(
+        DOCTYPE_RC_GLE, {"company": company, "reporting_doe": 0}
+    )
+    if rc_gle_count == 0:
+        frappe.throw(_("No RC GLE records found. Please run sync first."))
 
-        excluded_accounts_condition = _get_excluded_accounts_condition()
+    _publish_progress(20, f"Validated. Found {rc_gle_count} RC GLE records.")
 
-        # Sort rc_parameters by doe_posting_date ascending
-        sorted_params = _get_rc_parameters_sorted_by_date(settings.rc_parameters)
+    # ====================================================================
+    # PHASE 2: FILTER RC GLE RECORDS & SETUP
+    # ====================================================================
+    _publish_progress(25, "Phase 2: Filtering RC GLE records...")
 
-        _publish_progress(30, f"Found {len(sorted_params)} row(s) to process")
+    excluded_accounts_condition = _get_excluded_accounts_condition()
 
-        # ====================================================================
-        # PHASE 3: DELETE EXISTING DOE RECORDS
-        # ====================================================================
-        _publish_progress(32, "Phase 3: Deleting existing DOE records...")
+    # Sort rc_parameters by doe_posting_date ascending
+    sorted_params = _get_rc_parameters_sorted_by_date(settings.rc_parameters)
 
-        frappe.db.sql(  # nosemgrep — parameterised values
-            f"""
+    _publish_progress(30, f"Found {len(sorted_params)} row(s) to process")
+
+    # ====================================================================
+    # PHASE 3: DELETE EXISTING DOE RECORDS
+    # ====================================================================
+    _publish_progress(32, "Phase 3: Deleting existing DOE records...")
+
+    frappe.db.sql(  # nosemgrep — parameterised values
+        f"""
 			DELETE FROM `tab{DOCTYPE_RC_GLE}`
 			WHERE company = %s AND reporting_doe = 1
 		""",  # noqa: S608
-            company,
-        )
+        company,
+    )
 
-        _publish_progress(35, "Deleted existing DOE records")
+    _publish_progress(35, "Deleted existing DOE records")
 
-        # ====================================================================
-        # PHASE 4: COMPUTE DOE & CREATE RECORDS
-        # ====================================================================
-        _publish_progress(40, "Phase 4: Computing DOE and creating records...")
+    # ====================================================================
+    # PHASE 4: COMPUTE DOE & CREATE RECORDS
+    # ====================================================================
+    _publish_progress(40, "Phase 4: Computing DOE and creating records...")
 
-        doe_records, total_processed_count = _collect_doe_records(
-            sorted_params,
-            cast("str", company),
-            cast("str", settings.reporting_currency),
-            excluded_accounts_condition=excluded_accounts_condition,
-            progress=True,
-        )
+    doe_records, total_processed_count = _collect_doe_records(
+        sorted_params,
+        cast("str", company),
+        cast("str", settings.reporting_currency),
+        excluded_accounts_condition=excluded_accounts_condition,
+        progress=True,
+    )
 
-        result = _finish_background_doe(settings, doe_records, total_processed_count)
-
-    except Exception as e:
-        frappe.db.rollback()
-
-        frappe.log_error(
-            title=f"DOE Computation Failed for {company or 'unknown'}",
-            message=frappe.get_traceback(),
-        )
-
-        _publish_progress(-1, f"Error: {e!s}")
-        raise
-
-    else:
-        return result
+    return _finish_background_doe(settings, doe_records, total_processed_count)
 
 
 def compute_doe_inline(
@@ -387,6 +382,7 @@ def compute_doe_inline(
     Returns:
         dict: Computation result with accounts_processed and records_created
     """
+    hold_ledger_lock()
     savepoint_name: str | None = None
     try:
         settings = cast(
@@ -409,7 +405,7 @@ def compute_doe_inline(
         if not settings.rc_parameters or len(settings.rc_parameters) == 0:
             return {"success": False, "message": "No RC Parameters defined"}
 
-        validate_doe_exchange_rates(settings.rc_parameters)
+        _validate_doe_parameters(settings.rc_parameters, company)
 
         # Get excluded accounts
         excluded_accounts_condition = _get_excluded_accounts_condition()
@@ -455,6 +451,11 @@ def compute_doe_inline(
         raise
 
 
+def _validate_doe_parameters(rows: list[Any], company: str | None) -> None:
+    validate_doe_exchange_rates(rows)
+    validate_offset_accounts(rows, company)
+
+
 def _get_excluded_accounts_condition() -> str:
     excluded_accounts = frappe.db.sql_list(
         """
@@ -476,7 +477,7 @@ def _get_excluded_accounts_condition() -> str:
 
 
 def _finish_background_doe(
-    settings: ReportingCurrencySettings,
+    _settings: ReportingCurrencySettings,
     doe_records: list[dict[str, Any]],
     total_processed_count: int,
 ) -> dict[str, Any]:
@@ -492,7 +493,6 @@ def _finish_background_doe(
 
     _publish_progress(95, f"Inserted {len(doe_records)} DOE records")
 
-    settings.db_set("last_sync_timestamp", now())
     frappe.db.commit()  # nosemgrep — background job
 
     _publish_progress(100, "DOE computation completed successfully!")
@@ -609,6 +609,13 @@ def _process_doe_parameter(
         profit_loss_currency_map=profit_loss_currency_map,
         prior_doe_by_group=context.prior_doe_by_group,
     )
+    for record in records:
+        record.update(
+            source_exchange_rate=exchange_rate,
+            exchange_rate_application="Inverse",
+            exchange_rate=1 / exchange_rate,
+            date=doe_posting_date,
+        )
     return records, count, f"Completed row {row.idx} (until {doe_posting_date})"
 
 

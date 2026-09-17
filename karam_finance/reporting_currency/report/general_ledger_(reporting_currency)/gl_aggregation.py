@@ -435,9 +435,23 @@ def _process_consolidated_entry(
         if gle.against_voucher:
             state.against_voucher_lists.setdefault(key, []).append(gle.against_voucher)
     else:
+        _merge_exchange_details(state.consolidated_gle[key], gle)
         state.update_value_in_dict(
             state.consolidated_gle, key, gle, collect_against=True
         )
+
+
+def _merge_exchange_details(target: dict[str, Any], incoming: dict[str, Any]) -> None:
+    """A consolidated row may only display exchange details shared by every row."""
+    fields = (
+        "currency_exchange",
+        "exchange_rate_date",
+        "source_exchange_rate",
+        "exchange_rate_application",
+    )
+    if any(target.get(field) != incoming.get(field) for field in fields):
+        for field in fields:
+            target[field] = None
 
 
 def _append_consolidated_entries(state: SimpleNamespace) -> None:

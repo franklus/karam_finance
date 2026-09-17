@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from contextlib import nullcontext
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
@@ -14,6 +15,23 @@ from karam_finance.letter_reconciliation.doctype.letter_reconciliation_settings 
 from karam_finance.letter_reconciliation.doctype.letter_reconciliation_settings import (
     letter_reconciliation_settings as settings,
 )
+
+
+@pytest.fixture
+def mutable_ledger(monkeypatch: pytest.MonkeyPatch) -> MagicMock:
+    database = MagicMock()
+    monkeypatch.setattr(frappe, "db", database)
+    # These mocked legacy paths are separate from the native permission tests.
+    monkeypatch.setattr(rebuild, "check_rebuild_voucher", MagicMock())
+    monkeypatch.setattr(settings, "check_rebuild_scope", MagicMock())
+    monkeypatch.setattr(settings, "check_rebuild_journals", MagicMock())
+    monkeypatch.setattr(settings, "check_rebuild_batch", MagicMock())
+    monkeypatch.setattr(settings, "as_rebuild_user", nullcontext)
+    monkeypatch.setattr(settings, "acquire_rebuild_guard", MagicMock(return_value=True))
+    monkeypatch.setattr(settings, "renew_rebuild_guard", MagicMock(return_value=True))
+    monkeypatch.setattr(settings, "release_rebuild_guard", MagicMock())
+    monkeypatch.setattr(settings, "rebuild_execution", lambda: nullcontext(True))
+    return database
 
 
 def _raise(message: str, *_args: object, **_kwargs: object) -> None:
@@ -95,7 +113,11 @@ def test_closed_period_repost_and_settings_cache_audit_enqueue() -> None:
         "already_correct_count": 0,
         "failures": [],
     }
-    with patch.object(settings.frappe, "cache", cache):
+    with (
+        patch.object(settings.frappe, "cache", cache),
+        patch.object(settings, "renew_rebuild_guard", return_value=True),
+        patch.object(settings, "release_rebuild_guard"),
+    ):
         settings._save_rebuild_state(state)
         cache.set_value.assert_called_once_with(
             "historical_gl_rebuild_state:r1", state, expires_in_sec=14400
@@ -220,7 +242,11 @@ def test_reason_groups_and_settings_guards() -> None:
     assert groups[0]["voucher_count"] == 2 and groups[0]["voucher_samples"] == ["JV-1"]
     cache = MagicMock()
     cache.get_value.side_effect = [{"run_id": "r1"}, None]
-    with patch.object(settings.frappe, "cache", cache):
+    with (
+        patch.object(settings.frappe, "cache", cache),
+        patch.object(settings, "renew_rebuild_guard", return_value=True),
+        patch.object(settings, "release_rebuild_guard"),
+    ):
         assert settings._get_rebuild_state("r1") == {"run_id": "r1"}
         assert settings._get_rebuild_state("missing") is None
     audit = SimpleNamespace(save=MagicMock())
@@ -234,7 +260,10 @@ def test_reason_groups_and_settings_guards() -> None:
     assert "No eligible" in settings._no_eligible_vouchers_message()
 
 
-def test_mocked_repost_invokes_temporary_noop_validators_and_restores_them() -> None:
+def test_mocked_repost_invokes_temporary_noop_validators_and_restores_them(
+    mutable_ledger: MagicMock,
+) -> None:
+    mutable_ledger.get_single_value.return_value = 0
     original_party = rebuild.erpnext_party.validate_account_party_type
     original_gl_party = rebuild.erpnext_gl_entry.validate_account_party_type
     original_balance = rebuild.erpnext_gl_entry.validate_balance_type
@@ -267,12 +296,13 @@ def test_mocked_repost_invokes_temporary_noop_validators_and_restores_them() -> 
     assert not hasattr(flags, "through_repost_accounting_ledger")
 
 
-def test_enqueue_public_guards_reject_running_or_empty_without_queueing() -> None:
+def test_enqueue_public_guards_reject_running_or_empty_without_queueing(
+    mutable_ledger: MagicMock,
+) -> None:
+    mutable_ledger.get_single_value.return_value = 0
     with (
         patch.object(settings.frappe, "only_for"),
-        patch.object(
-            settings.frappe, "cache", MagicMock(get_value=MagicMock(return_value="run"))
-        ),
+        patch.object(settings, "acquire_rebuild_guard", return_value=False),
         patch.object(settings, "_", side_effect=str),
         patch.object(settings.frappe, "throw", side_effect=_raise),
         patch.object(settings.frappe, "enqueue") as enqueue,
@@ -282,7 +312,10 @@ def test_enqueue_public_guards_reject_running_or_empty_without_queueing() -> Non
     enqueue.assert_not_called()
 
 
-def test_worker_empty_eligible_state_uses_failure_boundary_without_repost() -> None:
+def test_worker_empty_eligible_state_uses_failure_boundary_without_repost(
+    mutable_ledger: MagicMock,
+) -> None:
+    mutable_ledger.get_single_value.return_value = 0
     state: settings.RebuildRunState = {
         "run_id": "r1",
         "user": "user",
@@ -302,7 +335,7 @@ def test_worker_empty_eligible_state_uses_failure_boundary_without_repost() -> N
         "already_correct_count": 0,
         "failures": [],
     }
-    db = MagicMock()
+    db = MagicMock(get_single_value=MagicMock(return_value=0))
     with (
         patch.object(settings, "_get_rebuild_state", return_value=state),
         patch.object(settings, "_", side_effect=str),
@@ -312,7 +345,7 @@ def test_worker_empty_eligible_state_uses_failure_boundary_without_repost() -> N
         patch.object(settings.frappe, "log_error"),
         patch.object(settings, "_publish_rebuild_failure") as failure,
         patch.object(settings, "_clear_rebuild_state") as clear,
-        patch.object(settings, "backfill_reference_detail_no_bulk") as backfill,
+        patch.object(settings, "rebuild_single_voucher") as backfill,
     ):
         settings.run_historical_gl_rebuild_job("r1")
     db.rollback.assert_called_once_with()

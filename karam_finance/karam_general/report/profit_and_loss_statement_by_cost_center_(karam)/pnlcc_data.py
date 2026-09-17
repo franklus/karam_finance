@@ -21,6 +21,8 @@ from erpnext.accounts.report.utils import get_currency
 from frappe.query_builder import Case, DocType
 from frappe.query_builder.functions import Sum
 
+from karam_finance.common.ledger_permissions import apply_gl_permissions
+
 from .pnlcc_finance import finance_book_clause
 from .pnlcc_parsing import parse_multiselect
 
@@ -260,6 +262,7 @@ def _run_amount_query(
         .where(account.root_type.isin(ROOT_TYPES))
     )
 
+    query = apply_gl_permissions(query, gl)
     query = _apply_optional_filters(
         query,
         gl=gl,

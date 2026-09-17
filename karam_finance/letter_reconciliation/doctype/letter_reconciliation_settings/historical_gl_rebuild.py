@@ -30,6 +30,8 @@ from karam_finance.letter_reconciliation.utils.doc_events import (
     sync_journal_entry_gl_letters,
 )
 
+from .rebuild_permissions import check_rebuild_journals, check_rebuild_voucher
+
 _PREVIEW_SAMPLE_LIMIT = 10
 _GROUP_SAMPLE_LIMIT = 5
 _DATE_FILTER_PLACEHOLDER = "/*date_filter_clause*/"
@@ -168,6 +170,7 @@ def _required_date(value: str | date) -> date:
 def build_rebuild_preview(filters: RebuildFilters) -> RebuildPreview:
     """Classify the selected historical subset for preview and execution."""
     voucher_rows = _get_subset_voucher_rows(filters)
+    check_rebuild_journals([row["voucher_no"] for row in voucher_rows])
     voucher_account_map = _get_subset_voucher_account_map(filters)
     latest_closed_period = _get_latest_closed_period_end(filters["company"])
     repost_allowed = _is_journal_entry_repost_allowed()
@@ -242,12 +245,28 @@ def build_reason_summary_groups(
     )
 
 
+def validate_rebuild_ledger_mode() -> None:
+    """Reject reposting that would move historical reversals into today's period."""
+    if frappe.db.get_single_value(
+        "Accounts Settings", "enable_immutable_ledger", cache=False
+    ):
+        frappe.throw(
+            _(
+                "Historical GL rebuild is not supported while Immutable Ledger is enabled. "
+                "Rebuilding would change earlier-period balances."
+            ),
+            title=_("Historical GL Rebuild Blocked"),
+        )
+
+
 def rebuild_single_voucher(
     voucher_no: str,
     *,
     reference_detail_backfilled: bool = False,
 ) -> None:
     """Rebuild one historical Journal Entry through the official repost path."""
+    validate_rebuild_ledger_mode()
+    check_rebuild_voucher(voucher_no)
     if not reference_detail_backfilled:
         backfill_reference_detail_no(voucher_no)
 
@@ -276,9 +295,11 @@ def rebuild_single_voucher(
     #
     # Thread-safety caveat: module-level replacement is not thread-safe.
     # Acceptable here — rebuild jobs run in dedicated background workers.
-    _orig_validate = erpnext_party.validate_account_party_type
-    _orig_gl_entry_validate = erpnext_gl_entry.validate_account_party_type
-    _orig_validate_balance_type = erpnext_gl_entry.validate_balance_type
+    _orig_validate, _orig_gl_entry_validate, _orig_validate_balance_type = (
+        erpnext_party.validate_account_party_type,
+        erpnext_gl_entry.validate_account_party_type,
+        erpnext_gl_entry.validate_balance_type,
+    )
 
     def _noop_validate(self: object) -> None:  # noqa: ARG001
         return

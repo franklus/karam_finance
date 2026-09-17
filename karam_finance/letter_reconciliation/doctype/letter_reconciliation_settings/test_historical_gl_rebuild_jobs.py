@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from typing import cast
+from contextlib import nullcontext
+from typing import cast, override
 from unittest.mock import patch
 
 import frappe
@@ -26,6 +27,30 @@ _REBUILD_MODULE = (
 
 class TestHistoricalGLRebuildJobs(FrappeTestCase):
     """Regression tests for historical rebuild behaviour."""
+
+    @override
+    def setUp(self) -> None:
+        super().setUp()
+        # Isolate the existing job orchestration contracts from native authorisation.
+        self.enterContext(patch.object(settings_module, "check_rebuild_scope"))
+        self.enterContext(patch.object(settings_module, "check_rebuild_journals"))
+        self.enterContext(patch.object(settings_module, "check_rebuild_batch"))
+        self.enterContext(patch.object(settings_module, "as_rebuild_user", nullcontext))
+        self.enterContext(
+            patch.object(
+                settings_module, "rebuild_execution", lambda: nullcontext(True)
+            )
+        )
+        # Native isolation tests verify real Redis ownership; these retain fake job contracts.
+        self.enterContext(
+            patch.object(settings_module, "acquire_rebuild_guard", return_value=True)
+        )
+        self.enterContext(
+            patch.object(settings_module, "renew_rebuild_guard", return_value=True)
+        )
+        self.release_guard = self.enterContext(
+            patch.object(settings_module, "release_rebuild_guard")
+        )
 
     def test_preview_historical_gl_rebuild_returns_summary(self) -> None:
         """The preview endpoint should return the helper summary."""
@@ -192,7 +217,7 @@ class TestHistoricalGLRebuildJobs(FrappeTestCase):
 
         assert "progress_event" in result
         assert "done_event" in result
-        mock_cache_set.assert_called_once()
+        mock_cache_set.assert_not_called()
         mock_save_state.assert_called_once()
         run_state = mock_save_state.call_args.args[0]
         assert run_state["filters"] == filters
@@ -399,9 +424,6 @@ class TestHistoricalGLRebuildJobs(FrappeTestCase):
         with (
             patch(f"{_SETTINGS_MODULE}._REBUILD_BATCH_SIZE", 2),
             patch(f"{_SETTINGS_MODULE}._get_rebuild_state", return_value=state),
-            patch(
-                f"{_SETTINGS_MODULE}.backfill_reference_detail_no_bulk"
-            ) as mock_backfill_bulk,
             patch(f"{_SETTINGS_MODULE}.rebuild_single_voucher"),
             patch(f"{_SETTINGS_MODULE}._publish_progress"),
             patch(f"{_SETTINGS_MODULE}._save_rebuild_state") as mock_save_state,
@@ -414,7 +436,6 @@ class TestHistoricalGLRebuildJobs(FrappeTestCase):
         assert state["next_index"] == 2
         assert state["rebuilt_count"] == 2
         assert mock_save_state.call_count == 2
-        mock_backfill_bulk.assert_called_once_with(["JV-0001", "JV-0002"])
         mock_enqueue_batch.assert_called_once_with("run-001")
         mock_finalise.assert_not_called()
 
@@ -428,13 +449,13 @@ class TestHistoricalGLRebuildJobs(FrappeTestCase):
             settings_module.run_historical_gl_rebuild_job("run-001")
 
         deleted_keys = [call.args[0] for call in mock_delete.call_args_list]
-        assert settings_module._REBUILD_CACHE_KEY in deleted_keys
+        self.release_guard.assert_called_once_with("run-001")
         assert settings_module._get_rebuild_state_key("run-001") in deleted_keys
 
-    def test_run_historical_gl_rebuild_job_bulk_backfills_before_savepoint(
+    def test_run_historical_gl_rebuild_job_rebuilds_inside_savepoint(
         self,
     ) -> None:
-        """Batch reference-detail backfill should happen before voucher savepoints."""
+        """Each rebuild, including its backfill, starts after its voucher savepoint."""
         state = {
             "run_id": "run-001",
             "user": "test@example.com",
@@ -456,20 +477,17 @@ class TestHistoricalGLRebuildJobs(FrappeTestCase):
         }
 
         def check_savepoint_order(_name: str) -> None:
-            assert mock_backfill_bulk.called
+            assert mock_savepoint.called
+            raise frappe.ValidationError("blocked")
 
         with (
             patch(f"{_SETTINGS_MODULE}._get_rebuild_state", return_value=state),
             patch(
-                f"{_SETTINGS_MODULE}.backfill_reference_detail_no_bulk"
-            ) as mock_backfill_bulk,
-            patch(
                 f"{_SETTINGS_MODULE}.rebuild_single_voucher",
-                side_effect=frappe.ValidationError("blocked"),
+                side_effect=check_savepoint_order,
             ) as mock_rebuild,
             patch(
                 f"{_SETTINGS_MODULE}.frappe.db.savepoint",
-                side_effect=check_savepoint_order,
             ) as mock_savepoint,
             patch(f"{_SETTINGS_MODULE}.frappe.db.rollback"),
             patch(f"{_SETTINGS_MODULE}.frappe.log_error"),
@@ -479,9 +497,7 @@ class TestHistoricalGLRebuildJobs(FrappeTestCase):
         ):
             settings_module.run_historical_gl_rebuild_job("run-001")
 
-        mock_backfill_bulk.assert_called_once_with(["JV-0001"])
         mock_savepoint.assert_called_once()
         mock_rebuild.assert_called_once_with(
             "JV-0001",
-            reference_detail_backfilled=True,
         )

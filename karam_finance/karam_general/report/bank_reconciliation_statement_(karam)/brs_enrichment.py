@@ -70,11 +70,13 @@ def _party_type_names(party_type: str, parties: set[str]) -> dict[tuple[str, str
     if title_field == "name":
         return {(party_type, party): party for party in parties}
 
-    party_doc = frappe.qb.DocType(party_type)
-    rows = (
-        frappe.qb.from_(party_doc)
-        .select(party_doc.name, party_doc[title_field])
-        .where(party_doc.name.isin(parties))
-        .run(as_dict=True)
-    )
+    try:
+        rows = frappe.get_list(
+            party_type,
+            filters={"name": ["in", list(parties)]},
+            fields=["name", title_field],
+            limit=0,
+        )
+    except frappe.PermissionError:
+        return {}
     return {(party_type, row.name): row.get(title_field) or row.name for row in rows}

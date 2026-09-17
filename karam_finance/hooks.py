@@ -28,6 +28,40 @@ override_doctype_class = {  # noqa: V107 - Frappe controller override loader.
     "Bank Clearance": "karam_finance.overrides.bank_clearance.KaramBankClearance",
 }
 
+# AccountsController descendants: guard manual links before their on_trash SQL.
+extend_doctype_class = {  # noqa: V107 - Frappe controller extension loader.
+    doctype: [
+        "karam_finance.reporting_currency.source_deletion.ReportingSourceDeletionMixin"
+    ]
+    for doctype in (
+        "Asset",
+        "Asset Capitalization",
+        "Asset Repair",
+        "Delivery Note",
+        "Dunning",
+        "Invoice Discounting",
+        "Journal Entry",
+        "Material Request",
+        "Payment Entry",
+        "Period Closing Voucher",
+        "POS Invoice",
+        "Purchase Invoice",
+        "Purchase Order",
+        "Purchase Receipt",
+        "Quotation",
+        "Request for Quotation",
+        "Sales Invoice",
+        "Sales Order",
+        "Serial No",
+        "Stock Entry",
+        "Stock Reconciliation",
+        "Subcontracting Inward Order",
+        "Subcontracting Order",
+        "Subcontracting Receipt",
+        "Supplier Quotation",
+    )
+}
+
 # DocType JS includes (generated from curated list)
 doctype_js = dict.fromkeys(
     _KARAM_DOCTYPES, "public/js/karam_series/karam_series_filter.js"
@@ -63,6 +97,11 @@ after_doctype_update = [  # noqa: V107 - Frappe schema hook loader.
 # Document Events
 doc_events: dict[str, DocEvent] = {}
 
+doc_events["*"] = {
+    "on_trash": "karam_finance.reporting_currency.source_deletion.remove_generated_voucher_links",
+    "on_cancel": "karam_finance.reporting_currency.source_deletion.allow_generated_voucher_cancellation",
+}
+
 doc_events.setdefault("Stock Settings", {}).update(
     {
         "validate": (
@@ -91,8 +130,16 @@ for _dt in _karam_series_doctypes:
 # Letter Reconciliation doc events
 doc_events.setdefault("GL Entry", {}).update(
     {
+        "on_trash": (
+            "karam_finance.reporting_currency.source_deletion.remove_generated_gl_snapshot"
+        ),
         "before_insert": (
             "karam_finance.letter_reconciliation.utils.doc_events.gl_entry_before_insert"
+        ),
+        # Acquire the reporting-ledger lock before Frappe changes the source
+        # name. The after_rename hook retains the guard for direct callers.
+        "before_rename": (
+            "karam_finance.reporting_currency.doctype.reporting_currency_gle.sync.orchestrator.on_gl_entry_before_rename"
         ),
         # Update RC GLE records when GL Entries are renamed by ERPNext's scheduled job
         "after_rename": (
@@ -122,3 +169,12 @@ doc_events.setdefault("Journal Entry", {}).update(
 on_gle_rename = [  # noqa: V107 - ERPNext temporary GL-name scheduler hook.
     "karam_finance.reporting_currency.doctype.reporting_currency_gle.sync.orchestrator.on_gle_rename_hook"
 ]
+
+
+# Reporting snapshots inherit source GL visibility, including custom dimensions.
+permission_query_conditions = {  # noqa: V107 - Frappe permission hook loader.
+    "Reporting Currency GLE": "karam_finance.reporting_currency.permissions.permission_query_conditions",
+}
+has_permission = {  # noqa: V107 - Frappe permission hook loader.
+    "Reporting Currency GLE": "karam_finance.reporting_currency.permissions.has_permission",
+}

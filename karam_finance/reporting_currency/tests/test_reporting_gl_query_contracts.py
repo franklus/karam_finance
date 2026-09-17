@@ -23,6 +23,9 @@ reporting_source = importlib.import_module(
 gl_currency = importlib.import_module(
     "karam_finance.reporting_currency.report.general_ledger_(reporting_currency).gl_currency"
 )
+aggregation = importlib.import_module(
+    "karam_finance.reporting_currency.report.general_ledger_(reporting_currency).gl_aggregation"
+)
 
 
 def _raise_value(message: str) -> None:
@@ -43,6 +46,10 @@ def context(monkeypatch: pytest.MonkeyPatch) -> SimpleNamespace:
     monkeypatch.setattr(frappe, "get_meta", MagicMock(return_value=meta))
     monkeypatch.setattr(query, "get_accounting_dimensions", MagicMock(return_value=[]))
     monkeypatch.setattr(query, "build_match_conditions", MagicMock(return_value=""))
+    # Native permission tests cover the added source boundary; retain synthetic query contracts.
+    monkeypatch.setattr(
+        query, "source_visibility", MagicMock(return_value=Criterion.all([]))
+    )
     return SimpleNamespace(table=MariaDB.DocType("Reporting Currency GLE"), meta=meta)
 
 
@@ -303,32 +310,30 @@ def test_permission_predicate_reaches_every_query(
 
 
 @pytest.mark.parametrize(
-    ("values", "label", "basis"),
+    ("values", "label"),
     [
-        ({"manual_entry": 1}, "Manual", "Reporting-only adjustment"),
+        ({"manual_entry": 1}, "Manual"),
         (
             {"reporting_doe": 1, "manual_entry": 1},
             "Reporting DOE",
-            "Reporting-only adjustment",
         ),
         (
             {"account_currency": "USD"},
             "Synced GL",
-            "Copied account-currency amount (rate 1)",
         ),
         (
             {"account_currency": "EUR"},
             "Synced GL",
-            "Company amount multiplied by stored effective rate",
         ),
     ],
 )
-def test_currency_provenance(*, values: dict[str, Any], label: str, basis: str) -> None:
+def test_currency_provenance(*, values: dict[str, Any], label: str) -> None:
     row = frappe._dict(
         {
             "reporting_currency": "USD",
             "debit": "51309440814079.5444",
-            "exchange_rate": "0.1",
+            "source_exchange_rate": "10",
+            "exchange_rate_application": "Inverse",
             "currency_exchange": "RATE",
             "exchange_rate_date": "2026-01-01",
         }
@@ -337,9 +342,48 @@ def test_currency_provenance(*, values: dict[str, Any], label: str, basis: str) 
     query._prepare_currency_values([row], {})
     assert row.debit == Decimal("51309440814079.5444")
     assert row.entry_type == label
-    assert row.conversion_basis == basis
-    assert row.exchange_rate == ("0.1" if label == "Synced GL" else None)
-    assert row.currency_exchange == ("RATE" if label == "Synced GL" else None)
+    assert "conversion_basis" not in row
+    assert "exchange_rate" not in row
+    assert row.source_exchange_rate == "10"
+    assert row.exchange_rate_application == "Inverse"
+    assert row.exchange_rate_date == "2026-01-01"
+    assert row.currency_exchange == "RATE"
+
+
+@pytest.mark.parametrize("manual", [0, 1])
+def test_copied_source_rate_does_not_invent_a_conversion_method(manual: int) -> None:
+    row = frappe._dict(
+        manual_entry=manual,
+        source_exchange_rate=1,
+        exchange_rate_application="",
+        account_currency="USD",
+        reporting_currency="USD",
+    )
+    query._prepare_currency_values([row], {})
+    assert row.source_exchange_rate == 1
+    assert row.exchange_rate_application == ""
+    assert "exchange_rate" not in row
+
+
+@pytest.mark.parametrize("different", [False, True])
+def test_consolidated_exchange_details_require_a_shared_snapshot(
+    *, different: bool
+) -> None:
+    original = {
+        "currency_exchange": "RATE",
+        "exchange_rate_date": "2026-01-01",
+        "source_exchange_rate": 89500,
+        "exchange_rate_application": "Inverse",
+    }
+    combined = original.copy()
+    incoming = original.copy()
+    if different:
+        incoming["source_exchange_rate"] = 90000
+    aggregation._merge_exchange_details(combined, incoming)
+    aggregation._merge_exchange_details(combined, original)
+    assert {field: combined[field] for field in original} == (
+        dict.fromkeys(original) if different else original
+    )
 
 
 @pytest.mark.parametrize("value", [None, "", " "])

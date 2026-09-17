@@ -82,6 +82,58 @@ test("Reporting GL preserves exact display values and leaves source values intac
   );
 });
 
+test("Reporting GL exposes optional column controls and preserves their handlers", () => {
+  const context = loadRenderers();
+  const groups = [];
+  const controls = ["show_remarks", "show_source_currency_columns"].map(
+    (fieldname) => ({
+      df: { fieldtype: "Check", fieldname },
+      wrapper: {
+        handlers: true,
+        detached: false,
+        detach() {
+          this.detached = true;
+        }
+      }
+    })
+  );
+  context.__ = (value) => value;
+  context.$ = (element) =>
+    element === "<div>"
+      ? {
+          children: [],
+          append(child) {
+            this.children.push(child);
+          },
+          text() {
+            return this;
+          }
+        }
+      : element;
+  const area = {
+    length: 1,
+    empty() {
+      for (const control of controls) {
+        if (!control.wrapper.detached) {
+          control.wrapper.handlers = false;
+        }
+      }
+      groups.length = 0;
+    },
+    append(group) {
+      groups.push(group);
+    }
+  };
+  context.setupReportingGeneralLedgerFilterGroups({
+    check_filter_area: area,
+    filters: controls
+  });
+  for (const { wrapper } of controls) {
+    assert.ok(groups.some((group) => group.children.includes(wrapper)));
+    assert.equal(wrapper.handlers, true);
+  }
+});
+
 test("Reporting GL print and export hooks are scoped to its own report", () => {
   const context = loadRenderers();
   context.getReportingGeneralLedgerUX = () => ({

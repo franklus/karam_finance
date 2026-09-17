@@ -25,6 +25,20 @@ DECIMAL_WIDTH = 30
 # decimal accuracy for financial calculations.
 DECIMAL_PRECISION = 4
 
+# Retain 26 integer digits whilst preserving small reporting-rate multipliers.
+REPORTING_RATE_WIDTH = 35
+REPORTING_RATE_PRECISION = 9
+_DECIMAL_OVERRIDES = {
+    ("tabReporting Currency GLE", "exchange_rate"): (
+        REPORTING_RATE_WIDTH,
+        REPORTING_RATE_PRECISION,
+    ),
+    ("tabReporting Currency GLE", "source_exchange_rate"): (
+        REPORTING_RATE_WIDTH,
+        REPORTING_RATE_PRECISION,
+    ),
+}
+
 # Fields requiring wider decimal columns, keyed by DocType
 WIDENED_FLOAT_FIELDS: dict[str, list[str]] = {
     "Journal Entry": [
@@ -221,6 +235,7 @@ def ensure_currency_columns_capacity() -> None:
         "difference_reporting_currency",
         "reporting_doe_difference",
         "exchange_rate",
+        "source_exchange_rate",
         "transaction_exchange_rate",
     ]
 
@@ -257,9 +272,11 @@ def _ensure_table_columns_capacity(
     table_name: str, columns: list[str], existing_columns: dict[tuple[str, str], Any]
 ) -> None:
     """Widen only existing columns that need repair, using prefetched metadata."""
-    target_type = f"decimal({DECIMAL_WIDTH},{DECIMAL_PRECISION})"
-
     for column in columns:  # nosemgrep: frappe-db-commit-in-loop
+        width, precision = _DECIMAL_OVERRIDES.get(
+            (table_name, column), (DECIMAL_WIDTH, DECIMAL_PRECISION)
+        )
+        target_type = f"decimal({width},{precision})"
         col_info = existing_columns.get((table_name, column))
         if not col_info:
             continue
@@ -277,5 +294,5 @@ def _ensure_table_columns_capacity(
             # nosemgrep: frappe-n-plus-one-read-in-loop
             frappe.db.sql(
                 f"ALTER TABLE `{table_name}` MODIFY `{column}` "
-                f"DECIMAL({DECIMAL_WIDTH},{DECIMAL_PRECISION}) NOT NULL DEFAULT 0"
+                f"DECIMAL({width},{precision}) NOT NULL DEFAULT 0"
             )

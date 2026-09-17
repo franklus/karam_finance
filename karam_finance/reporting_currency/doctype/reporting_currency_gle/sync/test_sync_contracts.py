@@ -7,15 +7,19 @@ write boundaries without loading legacy fixtures or changing an active site.
 from __future__ import annotations
 
 import importlib
+import sqlite3
 from datetime import date
+from itertools import product
 from operator import itemgetter
 from types import SimpleNamespace
+from typing import Any, override
 from unittest import TestCase
-from unittest.mock import Mock, call, patch
+from unittest.mock import Mock, patch
 
 import frappe
+from frappe.utils.html_utils import clean_html
 
-from . import exchange_rates, phases, validation
+from . import conversion, exchange_rates, orchestrator, phases, validation
 from .context import InsertionContext
 
 # The repair module creates its site logger at import time.  Keep this unit
@@ -32,15 +36,145 @@ def _raise_validation(message: str, **_kwargs: object) -> None:
 
 
 class TestSyncPhases(TestCase):
-    def test_validation_falls_back_to_full_sync_when_incremental_is_empty(self) -> None:
+    @override
+    def setUp(self) -> None:
+        self.enterContext(patch.object(phases, "_validate_manual_source_links"))
+
+    def test_empty_full_sync_removes_generated_doe_but_preserves_manual_rows(
+        self,
+    ) -> None:
+        with sqlite3.connect(":memory:") as connection:
+            connection.execute(
+                'CREATE TABLE "tabReporting Currency GLE" '
+                "(name TEXT, manual_entry INTEGER, reporting_doe INTEGER)"
+            )
+            connection.executemany(
+                'INSERT INTO "tabReporting Currency GLE" VALUES (?, ?, ?)',
+                [("stale-doe", 0, 1), ("stale-source", None, 0), ("manual", 1, 0)],
+            )
+            database = Mock()
+
+            def execute_sql(query: str) -> list[Any]:
+                return connection.execute(query).fetchall()
+
+            database.sql.side_effect = execute_sql
+            with (
+                patch.object(orchestrator, "hold_ledger_lock"),
+                patch.object(
+                    orchestrator,
+                    "validate_settings",
+                    return_value={
+                        "reporting_currency": "USD",
+                        "last_sync_timestamp": "previous",
+                    },
+                ),
+                patch.object(phases, "fetch_gl_entries", return_value=[]),
+                patch.object(orchestrator, "run_deletion_phase", return_value={}),
+                patch.object(orchestrator, "publish_sync_progress"),
+                patch.object(phases, "publish_sync_progress"),
+                patch.object(frappe, "db", database),
+            ):
+                for _ in range(2):
+                    result = orchestrator.sync_reporting_currency_entries(
+                        "event", source_cutoff="cutoff"
+                    )
+                    assert result["inserted"] == 0
+                    assert connection.execute(
+                        'SELECT name FROM "tabReporting Currency GLE"'
+                    ).fetchall() == [("manual",)]
+            database.bulk_insert.assert_not_called()
+
+    def test_normal_sync_reconverts_old_and_new_entries_after_rate_deletion(
+        self,
+    ) -> None:
+        source = [
+            {
+                "name": "OLD",
+                "company": "Karam",
+                "account_currency": "EUR",
+                "posting_date": "2026-01-20",
+                "modified": "2026-01-20",
+                "debit": 100,
+            }
+        ]
+        timeline = [
+            {"date": date(2026, 1, 1), "rate": 1.2, "direction": "direct"},
+            {"date": date(2026, 1, 15), "rate": 1.3, "direction": "direct"},
+        ]
+        settings: dict[str, str | None] = {
+            "reporting_currency": "USD",
+            "last_sync_timestamp": None,
+        }
         database = Mock()
-        database.count.return_value = 3
-        database.exists.side_effect = [True, False]
+
+        # Deletion leaves no Currency Exchange row modified since the last sync.
+        def exists(doctype: str, *_args: object) -> bool:
+            return doctype != "Currency Exchange"
+
+        database.exists.side_effect = exists
+        database.sql_list.return_value = list[str]()
+
+        def fetch(*, last_sync_timestamp: str | None = None) -> list[dict[str, Any]]:
+            return [
+                row
+                for row in source
+                if not last_sync_timestamp or row["modified"] > last_sync_timestamp
+            ]
+
         with (
-            patch.object(phases, "frappe") as frappe_mock,
+            patch.object(orchestrator, "hold_ledger_lock"),
+            patch.object(orchestrator, "validate_settings", return_value=settings),
+            patch.object(orchestrator, "now", return_value="2026-02-03"),
+            patch.object(frappe.utils, "now", return_value="2026-02-03"),
+            patch.object(phases, "fetch_gl_entries", side_effect=fetch),
+            patch.object(phases, "_validate_manual_source_links"),
+            patch.object(phases, "_default_currency_for_entries", return_value="EUR"),
             patch.object(
-                phases, "fetch_gl_entries", side_effect=[[], [{"company": "Karam"}]]
+                phases,
+                "validate_currency_exchange_coverage",
+                return_value={"direct": True},
             ),
+            patch.object(phases, "build_exchange_rate_timeline", return_value=timeline),
+            patch.object(phases, "validate_temporal_coverage"),
+            patch.object(
+                orchestrator, "run_deletion_phase", return_value={}
+            ) as deletion,
+            patch.object(
+                orchestrator, "run_insertion_phase", return_value={}
+            ) as insertion,
+            patch.object(orchestrator, "publish_sync_progress"),
+            patch.object(phases, "publish_sync_progress"),
+            patch.object(frappe, "db", database),
+            patch.object(frappe, "session", SimpleNamespace(user="Administrator")),
+            patch.object(
+                frappe, "get_system_settings", return_value="Banker's Rounding"
+            ),
+            patch.object(conversion, "get_currency_precision", return_value=2),
+        ):
+            orchestrator.sync_reporting_currency_entries("event")
+            assert insertion.call_args.args[2][0]["reporting_debit"] == 130
+            settings["last_sync_timestamp"] = "2026-02-01"
+            timeline.pop()
+            source.append({**source[0], "name": "NEW", "modified": "2026-02-02"})
+            for _ in range(2):
+                # Repeat with no further source changes: neither run may skip history.
+                stats = orchestrator.sync_reporting_currency_entries("event")
+                records = insertion.call_args.args[2]
+                assert {row["gl_entry"]: row["reporting_debit"] for row in records} == {
+                    "OLD": 120,
+                    "NEW": 120,
+                }
+                assert stats["sync_mode"] == "Full Sync"
+                assert insertion.call_args.args[4].is_incremental is False
+                assert deletion.call_args.args[2:] == (None, False)
+
+    def test_validation_always_fetches_full_source_despite_previous_sync(self) -> None:
+        entries = [
+            {"name": "OLD", "company": "Karam"},
+            {"name": "NEW", "company": "Karam"},
+        ]
+        with (
+            patch.object(phases, "fetch_gl_entries", return_value=entries) as fetch,
             patch.object(phases, "get_company_default_currency", return_value="USD"),
             patch.object(
                 phases,
@@ -49,18 +183,9 @@ class TestSyncPhases(TestCase):
             ),
             patch.object(phases, "publish_sync_progress"),
         ):
-            frappe_mock.db = database
-            result = phases.run_validation_phase("event", "user", "EUR", "cutoff")
-
-        assert result == (
-            [{"company": "Karam"}],
-            "USD",
-            False,
-            "Full Sync (rebuild)",
-            {"direct": True},
-            None,
-        )
-        assert database.count.call_args == call("GL Entry", {"docstatus": 1})
+            result = phases.run_validation_phase("event", "user", "EUR", "2026-01-01")
+        assert result == (entries, "USD", False, "Full Sync", {"direct": True}, None)
+        fetch.assert_called_once_with(last_sync_timestamp=None)
 
     def test_validation_returns_early_without_source_rows(self) -> None:
         with (
@@ -89,7 +214,9 @@ class TestSyncPhases(TestCase):
         validate_rates.assert_not_called()
         currency.assert_not_called()
 
-    def test_deletion_keeps_orphan_cleanup_out_of_incremental_runs(self) -> None:
+    def test_incremental_deletion_also_reconciles_physically_deleted_sources(
+        self,
+    ) -> None:
         with (
             patch.object(
                 phases, "fetch_cancelled_gl_entries", return_value=[{"name": "GLE-1"}]
@@ -97,12 +224,14 @@ class TestSyncPhases(TestCase):
             patch.object(
                 phases, "delete_rc_gle_for_cancelled_gl_entries", return_value=2
             ),
-            patch.object(phases, "cleanup_orphaned_rc_gle_records") as cleanup,
+            patch.object(
+                phases, "cleanup_orphaned_rc_gle_records", return_value=3
+            ) as cleanup,
             patch.object(phases, "publish_sync_progress"),
         ):
             result = phases.run_deletion_phase("event", None, "cutoff", True)
-        assert result == {"deleted_cancelled": 2, "deleted_orphaned": 0}
-        cleanup.assert_not_called()
+        assert result == {"deleted_cancelled": 2, "deleted_orphaned": 3}
+        cleanup.assert_called_once()
 
     def test_deletion_full_sync_repairs_orphans_even_without_cancellations(
         self,
@@ -237,6 +366,51 @@ class TestSyncPhases(TestCase):
 
 
 class TestExchangeRatesAndValidation(TestCase):
+    def test_conflicting_same_date_rates_fail_independently_of_query_order(
+        self,
+    ) -> None:
+        rates = [
+            {"name": "CE-A", "date": "2026-01-01", "exchange_rate": 2},
+            {"name": "CE-B", "date": "2026-01-01", "exchange_rate": 3},
+        ]
+        for direction, records in product(
+            ("direct", "inverse"), (rates, list(reversed(rates)))
+        ):
+            with (
+                self.subTest(direction=direction, records=records),
+                patch.object(exchange_rates, "frappe") as boundary,
+            ):
+                boundary.db.get_all.return_value = records
+                boundary.throw.side_effect = _raise_validation
+                with self.assertRaisesRegex(frappe.ValidationError, "CE-A.*CE-B"):
+                    exchange_rates.build_exchange_rate_timeline(
+                        "USD",
+                        "EUR",
+                        {
+                            "direct": direction == "direct",
+                            "inverse": direction == "inverse",
+                        },
+                    )
+                boundary.db.sql.assert_not_called()
+
+    def test_equal_rate_duplicates_choose_stable_record_identity(self) -> None:
+        with patch.object(exchange_rates, "frappe") as boundary:
+            boundary.db.get_all.return_value = [
+                {"name": "CE-B", "date": "2026-01-01", "exchange_rate": "2.00"},
+                {"name": "CE-A", "date": "2026-01-01", "exchange_rate": 2},
+            ]
+            timeline = exchange_rates.build_exchange_rate_timeline(
+                "USD", "EUR", {"direct": True, "inverse": False}
+            )
+        assert timeline == [
+            {
+                "date": date(2026, 1, 1),
+                "rate": 2.0,
+                "direction": "direct",
+                "currency_exchange": "CE-A",
+            }
+        ]
+
     def test_empty_rate_coverage_avoids_currency_exchange_queries(self) -> None:
         database = Mock()
         with patch.object(exchange_rates, "frappe") as frappe_mock:
@@ -342,6 +516,35 @@ class TestExchangeRatesAndValidation(TestCase):
                 reporting_currency="USD",
             )
         below_threshold.cache.set_value.assert_not_called()
+
+    def test_large_temporal_error_uses_a_sanitiser_safe_authenticated_link(
+        self,
+    ) -> None:
+        entries = [
+            {
+                "gle": f"GLE-{index}",
+                "date": date(2025, 1, 22 - index),
+                "voucher": "JV",
+            }
+            for index in range(21)
+        ]
+        with patch.object(exchange_rates, "frappe") as frappe_mock:
+            frappe_mock.cache = Mock()
+            frappe_mock.generate_hash.return_value = "hash"
+            exchange_rates._throw_temporal_coverage_error(
+                entries, date(2026, 1, 1), "LBP", reporting_currency="USD"
+            )
+            (message,) = frappe_mock.throw.call_args.args
+
+        cleaned = clean_html(message)
+        assert "<button" not in cleaned
+        assert "onclick" not in cleaned
+        assert (
+            '<a href="/api/method/karam_finance.reporting_currency.doctype.'
+            "reporting_currency_gle.sync.utils.export_temporal_validation_entries_csv?"
+            in cleaned
+        )
+        assert "cache_key=temporal_validation_entries_hash" in cleaned
 
     def test_pre_timeline_lookup_fails_closed(self) -> None:
         with (

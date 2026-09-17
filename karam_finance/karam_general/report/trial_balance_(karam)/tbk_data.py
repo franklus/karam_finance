@@ -14,6 +14,11 @@ from erpnext.accounts.report.utils import convert_to_presentation_currency, get_
 from frappe.query_builder.functions import Sum
 from frappe.utils import add_days, flt, getdate
 
+from karam_finance.common.ledger_permissions import (
+    apply_gl_permissions,
+    has_gl_restrictions,
+)
+
 from .tbk_aggregation import (
     accumulate_values_into_parents,
     apply_balances_to_accounts,
@@ -103,7 +108,7 @@ def _get_opening_balances(
     )
     last_period_closing_voucher = None
 
-    if not ignore_closing_balances:
+    if not ignore_closing_balances and not has_gl_restrictions():
         last_period_closing_voucher = frappe.db.get_all(
             "Period Closing Voucher",
             filters={
@@ -291,6 +296,7 @@ def _get_gl_opening_currency_rows(
     if not flt(filters.get("with_period_closing_entry_for_opening")):
         query = query.where(gl_entry.voucher_type != "Period Closing Voucher")
 
+    query = apply_gl_permissions(query, gl_entry)
     query = apply_gl_filters(
         query,
         gl_entry,

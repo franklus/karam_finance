@@ -8,6 +8,8 @@ from unittest.mock import Mock, patch
 
 import frappe
 
+from karam_finance.reporting_currency import ledger_lock
+
 from . import conversion, doe, orchestrator, phases
 from .context import SyncSnapshot
 
@@ -41,6 +43,20 @@ class TestSnapshotCurrency(TestCase):
             }
         ]
         self.frappe_mock = Mock()
+        self.stack.enter_context(
+            patch.object(orchestrator, "now", return_value="worker-cutoff")
+        )
+        self.stack.enter_context(patch.object(orchestrator, "hold_ledger_lock"))
+        self.stack.enter_context(
+            patch.object(
+                ledger_lock,
+                "hold_ledger_lock",
+                side_effect=lambda: Mock(
+                    database=self.frappe_mock.db,
+                    scopes=0,
+                ),
+            )
+        )
         self.frappe_mock.throw.side_effect = self.throw_validation_error
         for module in (orchestrator, phases, conversion):
             self.stack.enter_context(patch.object(module, "frappe", self.frappe_mock))
@@ -136,22 +152,24 @@ class TestSnapshotCurrency(TestCase):
         object.__delattr__(self.snapshot, "reporting_currency")
         self.assert_rejected_without_sync_writes("no target currency")
 
-    def test_matching_currency_converts_with_original_snapshot_and_cutoff(self) -> None:
-        self.run_job()
+    def test_matching_currency_rebuilds_inputs_at_worker_boundary(self) -> None:
+        with patch.object(orchestrator, "now", return_value="worker-cutoff"):
+            self.run_job()
         record = self.insertion.call_args.args[2][0]
         assert record["reporting_currency"] == "USD"
         assert record["reporting_debit"] == 10
         assert record["reporting_credit"] == 0
         assert record["currency_exchange"] == "KES-USD"
-        assert self.insertion.call_args.args[4].cutoff == self.snapshot.cutoff
-        assert self.validation.call_args.args[4] is self.snapshot.currency_coverage
-        assert self.temporal.call_args.args[6] is self.snapshot.rate_timeline
-        self.frappe_mock.db.commit.assert_called_once()
+        assert self.insertion.call_args.args[4].cutoff == "worker-cutoff"
+        assert self.validation.call_args.args[4] is None
+        assert self.validation.call_args.args[5] is None
+        assert self.temporal.call_args.args[6] is None
+        assert self.frappe_mock.db.commit.call_count == 2
         self.compute_doe.assert_called_once()
 
     def test_unrelated_settings_edit_does_not_reject_snapshot(self) -> None:
         self.settings["modified"] = "2026-09-07 13:00:00"
-        self.test_matching_currency_converts_with_original_snapshot_and_cutoff()
+        self.test_matching_currency_rebuilds_inputs_at_worker_boundary()
 
     def test_direct_call_without_snapshot_uses_worker_cutoff_and_fresh_inputs(
         self,

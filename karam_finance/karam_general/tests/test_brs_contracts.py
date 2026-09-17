@@ -3,6 +3,9 @@
 from __future__ import annotations
 
 import importlib
+import sqlite3
+from collections.abc import Iterator
+from itertools import product
 from types import SimpleNamespace
 from typing import Any
 from unittest.mock import MagicMock, call, patch
@@ -12,6 +15,17 @@ import pytest
 from frappe.query_builder.builder import MariaDB
 
 PACKAGE = "karam_finance.karam_general.report.bank_reconciliation_statement_(karam)"
+
+
+@pytest.fixture(autouse=True)  # noqa: V103 - pytest fixture registration.
+def administrator_reader() -> Iterator[None]:
+    """These existing pure arithmetic/query contracts use an unrestricted reader."""
+    with (
+        patch.object(frappe, "session", frappe._dict(user="Administrator")),
+        patch.object(frappe, "has_permission", return_value=True),
+        patch.object(frappe, "build_match_conditions", return_value=""),
+    ):
+        yield
 
 
 @pytest.fixture(scope="module")
@@ -27,6 +41,89 @@ def filters() -> frappe._dict[str, Any]:
 @pytest.fixture
 def qb() -> SimpleNamespace:
     return SimpleNamespace(DocType=MariaDB.DocType, from_=MariaDB.from_)
+
+
+@pytest.mark.parametrize(
+    "case", list(product(("purchase", "pos"), ("USD", "EUR"), (1, -1), (True, False)))
+)
+def test_invoice_movements_use_bank_currency_for_payments_and_returns(
+    queries: Any,
+    *,
+    qb: SimpleNamespace,
+    filters: Any,
+    case: tuple[str, str, int, bool],
+) -> None:
+    source, bank_currency, sign, outstanding = case
+    posting_date = "2026-01-20" if outstanding else "2026-02-01"
+    clearance_date = None if outstanding else "2026-01-20"
+    with sqlite3.connect(":memory:") as connection:
+        connection.execute(
+            'CREATE TABLE "tabCompany" (name TEXT, default_currency TEXT)'
+        )
+        connection.execute('INSERT INTO "tabCompany" VALUES (?, ?)', ("Karam", "USD"))
+        connection.execute(
+            'CREATE TABLE "tabAccount" (name TEXT, account_currency TEXT)'
+        )
+        connection.execute(
+            'INSERT INTO "tabAccount" VALUES (?, ?)', ("Bank", bank_currency)
+        )
+        if source == "purchase":
+            connection.execute(
+                'CREATE TABLE "tabPurchase Invoice" (name TEXT, docstatus INTEGER, is_paid INTEGER, '
+                "cash_bank_account TEXT, company TEXT, posting_date TEXT, clearance_date TEXT, "
+                "paid_amount REAL, base_paid_amount REAL, supplier TEXT, supplier_name TEXT, bill_no TEXT)"
+            )
+            connection.execute(
+                'INSERT INTO "tabPurchase Invoice" VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+                (
+                    "PI",
+                    1,
+                    1,
+                    "Bank",
+                    "Karam",
+                    posting_date,
+                    clearance_date,
+                    sign * 100,
+                    sign * 120,
+                    "Supplier",
+                    "Supplier",
+                    "Bill",
+                ),
+            )
+            builder = queries._purchase_invoice_query
+        else:
+            connection.execute(
+                'CREATE TABLE "tabSales Invoice" (name TEXT, docstatus INTEGER, is_pos INTEGER, '
+                "company TEXT, posting_date TEXT, debit_to TEXT, customer TEXT, customer_name TEXT)"
+            )
+            connection.execute(
+                'INSERT INTO "tabSales Invoice" VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
+                ("SI", 1, 1, "Karam", posting_date, "Debtors", "Customer", "Customer"),
+            )
+            connection.execute(
+                'CREATE TABLE "tabSales Invoice Payment" (parent TEXT, account TEXT, '
+                "amount REAL, base_amount REAL, clearance_date TEXT)"
+            )
+            connection.execute(
+                'INSERT INTO "tabSales Invoice Payment" VALUES (?, ?, ?, ?, ?)',
+                ("SI", "Bank", sign * 100, sign * 120, clearance_date),
+            )
+            builder = queries._pos_query
+        with patch.object(queries.frappe, "qb", qb):
+            query = builder(filters, outstanding=outstanding)
+        cursor = connection.execute(query.get_sql())
+        columns = [column[0] for column in cursor.description]
+        rows = [dict(zip(columns, row, strict=True)) for row in cursor]
+    assert len(rows) == 1
+    expected = sign * (120 if bank_currency == "USD" else 100)
+    if source == "purchase":
+        expected = -expected
+    if outstanding:
+        assert rows[0]["account_currency"] == bank_currency
+        assert rows[0]["debit"] == max(expected, 0)
+        assert rows[0]["credit"] == max(-expected, 0)
+    else:
+        assert rows[0]["movement"] == expected
 
 
 @pytest.mark.parametrize(
@@ -97,8 +194,7 @@ def qb() -> SimpleNamespace:
                 "`posting_date`<='2026-01-31'",
                 "`tabPurchase Invoice`.`clearance_date` IS NULL",
                 "`tabPurchase Invoice`.`clearance_date`>'2026-01-31'",
-                "`tabPurchase Invoice`.`paid_amount`<0 THEN -`tabPurchase Invoice`.`paid_amount` ELSE 0 END `debit`",
-                "`tabPurchase Invoice`.`paid_amount`>0 THEN `tabPurchase Invoice`.`paid_amount` ELSE 0 END `credit`",
+                "`tabPurchase Invoice`.`base_paid_amount` ELSE `tabPurchase Invoice`.`paid_amount` END",
             ),
         ),
         (
@@ -108,7 +204,7 @@ def qb() -> SimpleNamespace:
             (
                 "`posting_date`>'2026-01-31'",
                 "NOT `tabPurchase Invoice`.`clearance_date` IS NULL",
-                "-`tabPurchase Invoice`.`paid_amount`",
+                "`tabPurchase Invoice`.`base_paid_amount` ELSE `tabPurchase Invoice`.`paid_amount` END",
             ),
         ),
         (
@@ -123,8 +219,7 @@ def qb() -> SimpleNamespace:
                 "`tabSales Invoice`.`posting_date`<='2026-01-31'",
                 "`tabSales Invoice Payment`.`clearance_date` IS NULL",
                 "`tabSales Invoice Payment`.`clearance_date`>'2026-01-31'",
-                "`tabSales Invoice Payment`.`amount`>0 THEN `tabSales Invoice Payment`.`amount` ELSE 0 END `debit`",
-                "`tabSales Invoice Payment`.`amount`<0 THEN -`tabSales Invoice Payment`.`amount` ELSE 0 END `credit`",
+                "`tabSales Invoice Payment`.`base_amount` ELSE `tabSales Invoice Payment`.`amount` END",
             ),
         ),
         (
@@ -135,7 +230,7 @@ def qb() -> SimpleNamespace:
                 "`tabSales Invoice`.`posting_date`>'2026-01-31'",
                 "NOT `tabSales Invoice Payment`.`clearance_date` IS NULL",
                 "`tabSales Invoice Payment`.`clearance_date`<='2026-01-31'",
-                "`tabSales Invoice Payment`.`amount` `movement`",
+                "`tabSales Invoice Payment`.`amount` END `movement`",
             ),
         ),
     ],
@@ -273,12 +368,11 @@ def test_party_name_enrichment_preserves_existing_and_batches_missing(
     ]
     customer = SimpleNamespace(get_title_field=lambda: "customer_name")
     supplier = SimpleNamespace(get_title_field=lambda: "name")
-    query_type = type(MariaDB.from_(MariaDB.DocType("Customer")))
     rows = [frappe._dict(name="C2", customer_name="Customer Two")]
     with (
         patch.object(enrichment.frappe, "get_meta", side_effect=[customer, supplier]),
         patch.object(enrichment.frappe, "qb", qb),
-        patch.object(query_type, "run", return_value=rows) as run,
+        patch.object(enrichment.frappe, "get_list", return_value=rows) as run,
     ):
         enrichment.populate_missing_party_names(entries)
     assert [x.get("party_name") for x in entries] == [
@@ -288,7 +382,12 @@ def test_party_name_enrichment_preserves_existing_and_batches_missing(
         "S1",
         "S2",
     ]
-    run.assert_called_once_with(as_dict=True)
+    run.assert_called_once_with(
+        "Customer",
+        filters={"name": ["in", ["C2"]]},
+        fields=["name", "customer_name"],
+        limit=0,
+    )
 
 
 def test_aggregation_extensions_are_additive_sorted_and_signed(
@@ -379,10 +478,25 @@ def test_controller_returns_empty_without_account_and_calculates_balance() -> No
     with patch.object(
         controller.brs_columns, "get_columns", return_value=[{"fieldname": "x"}]
     ):
-        assert controller.execute({}) == ([{"fieldname": "x"}], [])
+        assert controller.execute({}) == (
+            [{"fieldname": "x"}],
+            [],
+            None,
+            None,
+            None,
+            True,
+        )
     entries = [{"debit": 10, "credit": 2}]
     with (
         patch.object(controller.brs_columns, "get_columns", return_value=[]),
+        patch.object(
+            controller.frappe,
+            "get_doc",
+            return_value=SimpleNamespace(
+                check_permission=MagicMock(),
+                get={"company": "Karam", "is_group": False}.get,
+            ),
+        ),
         patch.object(controller.frappe, "get_cached_value", return_value="USD"),
         patch.object(controller.brs_aggregation, "get_entries", return_value=entries),
         patch.object(controller.brs_queries, "get_balance_on", return_value=100),
@@ -392,9 +506,10 @@ def test_controller_returns_empty_without_account_and_calculates_balance() -> No
             return_value=-5,
         ),
     ):
-        _columns, rows = controller.execute(
+        _columns, rows, *metadata = controller.execute(
             {"account": "Bank", "company": "Karam", "report_date": "2026-01-31"}
         )
+    assert metadata == [None, None, None, True]
     assert rows[-1]["credit"] == 0 and rows[-1]["debit"] == 87
 
 

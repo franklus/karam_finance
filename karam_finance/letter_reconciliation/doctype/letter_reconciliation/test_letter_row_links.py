@@ -128,6 +128,7 @@ def test_set_letter_scopes_to_selected_rows() -> None:
     all_items = cr_items + dt_items
 
     with (
+        patch(f"{MODULE_PATH}.frappe.has_permission", return_value=True),
         patch(f"{MODULE_PATH}.frappe.qb", qb),
         patch(f"{MODULE_PATH}.frappe.db.savepoint", fake_savepoint),
         patch(f"{MODULE_PATH}.frappe.db.rollback", fake_rollback),

@@ -36,6 +36,11 @@ from frappe.utils import cstr, flt, getdate
 from pypika.queries import QueryBuilder, Table
 from pypika.terms import Term
 
+from karam_finance.common.voucher_exclusions import (
+    JOURNAL_EXCLUSION_SQL,
+    exclude_journal_entries,
+)
+from karam_finance.reporting_currency.permissions import source_visibility
 from karam_finance.reporting_currency.report.reporting_source import amount
 
 from .gl_aggregation import _is_opening_entry, _is_report_entry
@@ -96,6 +101,7 @@ def get_gl_entries(
     # any report value or identifier.
     if match_conditions := build_match_conditions("Reporting Currency GLE"):
         criteria.append(RawCriterion(f"({match_conditions})"))
+    criteria.append(source_visibility(gl))
     query = query.where(Criterion.all(criteria))
     if not enrich_opening_entries and _can_compact_account_history(
         filters, currency_map
@@ -239,7 +245,8 @@ def _select_fields(
         gl.reporting_doe,
         gl.is_cancelled,
         gl.reporting_currency,
-        gl.exchange_rate,
+        gl.source_exchange_rate,
+        gl.exchange_rate_application,
         gl.currency_exchange,
         gl.date.as_("exchange_rate_date"),
         gl.posting_date,
@@ -411,19 +418,9 @@ def _build_qb_voucher_conditions(filters: dict[str, Any], gl: Table) -> list[Ter
         conditions.append(gl.against_voucher == filters["against_voucher_no"])
     voucher_no_not_in = _get_voucher_no_not_in_query(filters)
     if voucher_no_not_in is not None:
-        conditions.append(
-            gl.voucher_type.isnull()
-            | (gl.voucher_type != "Journal Entry")
-            | gl.voucher_no.isnull()
-            | ~gl.voucher_no.isin(voucher_no_not_in)
-        )
+        conditions.append(exclude_journal_entries(gl, voucher_no_not_in))
     elif filters.get("voucher_no_not_in"):
-        conditions.append(
-            gl.voucher_type.isnull()
-            | (gl.voucher_type != "Journal Entry")
-            | gl.voucher_no.isnull()
-            | ~gl.voucher_no.isin(filters["voucher_no_not_in"])
-        )
+        conditions.append(exclude_journal_entries(gl, filters["voucher_no_not_in"]))
     return conditions
 
 
@@ -649,7 +646,11 @@ def _build_voucher_conditions(filters: dict[str, Any]) -> list[str]:
     if filters.get("ignore_err") or filters.get("ignore_cr_dr_notes"):
         _populate_excluded_vouchers(filters)
     if filters.get("voucher_no_not_in"):
-        conditions.append("gl.voucher_no not in %(voucher_no_not_in)s")
+        conditions.append(
+            JOURNAL_EXCLUSION_SQL
+            if filters.get("ignore_err") or filters.get("ignore_cr_dr_notes")
+            else "gl.voucher_no not in %(voucher_no_not_in)s"
+        )
     return conditions
 
 
@@ -804,6 +805,7 @@ def get_flat_account_currency_openings(
     criteria = _build_qb_conditions(opening_filters, gl, voucher_data)
     if match_conditions := build_match_conditions("Reporting Currency GLE"):
         criteria.append(RawCriterion(f"({match_conditions})"))
+    criteria.append(source_visibility(gl))
     rows = (
         frappe.qb.from_(gl)
         .left_join(account)
@@ -858,7 +860,8 @@ def _prepare_currency_entry(
         if field in gl_entry:
             gl_entry[field] = decimal_amount(gl_entry[field])
     gl_entry["entry_type"] = _entry_type_label(gl_entry)
-    _set_conversion_context(gl_entry)
+    if not gl_entry.get("source_exchange_rate"):
+        gl_entry["source_exchange_rate"] = None
     if not cstr(gl_entry.get("account_currency")).strip() and (
         flt(gl_entry.get("debit_in_account_currency"))
         or flt(gl_entry.get("credit_in_account_currency"))
@@ -891,19 +894,6 @@ def _voucher_pair_condition(
             for doctype, name in pairs
         ]
     )
-
-
-def _set_conversion_context(gl_entry: Any) -> None:
-    if gl_entry.get("entry_type") != "Synced GL":
-        gl_entry["conversion_basis"] = "Reporting-only adjustment"
-        for field in ("exchange_rate", "currency_exchange", "exchange_rate_date"):
-            gl_entry[field] = None
-    elif gl_entry.get("account_currency") == gl_entry.get("reporting_currency"):
-        gl_entry["conversion_basis"] = "Copied account-currency amount (rate 1)"
-    else:
-        gl_entry["conversion_basis"] = (
-            "Company amount multiplied by stored effective rate"
-        )
 
 
 def _populate_excluded_vouchers(filters: dict[str, Any]) -> None:

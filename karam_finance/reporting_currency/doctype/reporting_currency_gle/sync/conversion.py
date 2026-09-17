@@ -86,10 +86,11 @@ def process_gl_entry(  # noqa: PLR0913, PLR0917 - retain the sync conversion com
 
     Steps:
     1. Check if account_currency == reporting_currency (optimisation - direct copy)
-    2. Otherwise, get applicable exchange rate for default_currency ↔ reporting_currency
-    3. Convert debit/credit (company currency) to reporting_debit/reporting_credit
-    4. Capture exchange metadata (Currency Exchange doc, date, effective rate)
-    5. Build complete RC GLE record dict
+    2. If company currency matches reporting currency, copy company amounts
+    3. Otherwise, get applicable exchange rate for default_currency ↔ reporting_currency
+    4. Convert debit/credit (company currency) to reporting_debit/reporting_credit
+    5. Capture exchange metadata (Currency Exchange doc, date, effective rate)
+    6. Build complete RC GLE record dict
 
     Returns dict ready for insertion.
 
@@ -107,13 +108,21 @@ def process_gl_entry(  # noqa: PLR0913, PLR0917 - retain the sync conversion com
     # Optimisation: If account is already in reporting currency, direct copy
     currency_exchange_name = None
     currency_exchange_date = None
-    exchange_rate_used = 1 if account_currency == reporting_currency else None
+    exchange_rate_used = 0
+    source_exchange_rate = 1
+    rate_application = ""
 
     if account_currency == reporting_currency:
         # Direct transfer - no conversion needed
         # Copy from account currency fields
         reporting_debit = flt(gle.get("debit_in_account_currency", 0))
         reporting_credit = flt(gle.get("credit_in_account_currency", 0))
+    elif default_currency == reporting_currency:
+        # The source already contains the reporting amounts in company currency.
+        # Identity conversion uses no Currency Exchange record or rate date.
+        reporting_debit = flt(gle.get("debit", 0))
+        reporting_credit = flt(gle.get("credit", 0))
+        exchange_rate_used = 1
     else:
         # Need currency conversion from company currency to reporting currency
         # Get applicable rate from timeline (default_currency ↔ reporting_currency)
@@ -138,6 +147,8 @@ def process_gl_entry(  # noqa: PLR0913, PLR0917 - retain the sync conversion com
 
         # For display, show the effective rate applied to convert default → reporting
         exchange_rate_used = _effective_exchange_rate(rate, direction)
+        source_exchange_rate = rate
+        rate_application = "Direct" if direction == "direct" else "Inverse"
 
     # Ensure date is serialized as ISO string for DB insert
     if currency_exchange_date and not isinstance(currency_exchange_date, str):
@@ -181,6 +192,8 @@ def process_gl_entry(  # noqa: PLR0913, PLR0917 - retain the sync conversion com
         "currency_exchange": currency_exchange_name,
         "date": currency_exchange_date,
         "exchange_rate": exchange_rate_used,
+        "source_exchange_rate": source_exchange_rate,
+        "exchange_rate_application": rate_application,
         "cost_center": gle.get("cost_center"),
         "project": gle.get("project"),
         "finance_book": gle.get("finance_book"),

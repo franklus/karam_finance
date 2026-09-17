@@ -145,6 +145,7 @@ class TestReportingCurrencyGLE(TestCase):
                 gl_entry=None,
                 reporting_doe=0,
                 reporting_currency="LBP",
+                get=_non_doe_value,
             ),
         )
         module.ReportingCurrencyGLE.validate(manual)

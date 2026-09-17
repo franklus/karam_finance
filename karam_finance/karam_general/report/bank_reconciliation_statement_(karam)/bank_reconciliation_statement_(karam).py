@@ -14,20 +14,22 @@ brs_aggregation = import_module(f"{__package__}.brs_aggregation")
 brs_columns = import_module(f"{__package__}.brs_columns")
 brs_enrichment = import_module(f"{__package__}.brs_enrichment")
 brs_queries = import_module(f"{__package__}.brs_queries")
+brs_permissions = import_module(f"{__package__}.brs_permissions")
 brs_rows = import_module(f"{__package__}.brs_rows")
 
 
 def execute(
     filters: dict[str, Any] | None = None,
-) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]], None, None, None, bool]:
     filters = frappe._dict(filters or {})
 
     columns = get_columns()
 
     account = filters.get("account")
     if not account:
-        return columns, []
+        return columns, [], None, None, None, True
 
+    brs_permissions.validate_filters(filters)
     account_currency = frappe.get_cached_value("Account", account, "account_currency")
 
     data = get_entries(filters)
@@ -74,7 +76,8 @@ def execute(
         ),
     ]
 
-    return columns, data
+    # Labelled reconciliation balances must not be summed again by the framework.
+    return columns, data, None, None, None, True
 
 
 def get_columns() -> list[dict[str, Any]]:

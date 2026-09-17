@@ -13,6 +13,9 @@ from frappe import _
 from frappe.model.document import Document
 from frappe.utils import flt
 
+from karam_finance.reporting_currency.ledger_lock import hold_ledger_lock
+from karam_finance.reporting_currency.offset_accounts import validate_offset_accounts
+
 if TYPE_CHECKING:
     from frappe.types import DF
 
@@ -36,10 +39,38 @@ class ReportingCurrencySettings(Document):
     if TYPE_CHECKING:
         reporting_currency: DF.Link | None
         last_sync_timestamp: DF.Datetime | None
+        last_ce_sync_timestamp: DF.Datetime | None  # noqa: V107 - Frappe metadata field.
 
     def validate(self) -> None:
         """Validate the document before saving."""
+        hold_ledger_lock()
+        self._validate_currency_change()
         self._validate_rc_parameters()
+
+    def onload(self) -> None:  # noqa: V105 - Frappe loads form context through this hook.
+        has_reporting_entries = bool(frappe.db.exists("Reporting Currency GLE", {}))
+        self.set_onload(
+            "has_reporting_entries",
+            has_reporting_entries,
+        )
+        self.set_onload("saved_reporting_currency", self.reporting_currency)
+
+    def _validate_currency_change(self) -> None:
+        previous = frappe.db.get_single_value(
+            "Reporting Currency Settings", "reporting_currency", cache=False
+        )
+        if previous == self.reporting_currency:
+            return
+        if frappe.db.exists("Reporting Currency GLE", {}):
+            frappe.throw(
+                _(
+                    "Confirm the reporting currency change from Reporting Currency "
+                    "Settings so the existing reporting ledger can be rebuilt."
+                )
+            )
+        # Even an empty reporting ledger must rebuild all historical source rows.
+        self.last_sync_timestamp = None
+        self.set("last_ce_sync_timestamp", None)
 
     def _validate_rc_parameters(self) -> None:
         """Validate the rc_parameters child table entries.
@@ -57,6 +88,8 @@ class ReportingCurrencySettings(Document):
                 frappe.throw(
                     _("Row {0}: DOE Posting Date is required.").format(row.idx)
                 )
+
+        validate_offset_accounts(self.rc_parameters)
 
 
 @frappe.whitelist()  # noqa: V103 - whitelisted Settings client lookup.

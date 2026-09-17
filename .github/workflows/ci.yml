@@ -94,6 +94,14 @@ jobs:
           bench --site test_site install-app erpnext
           bench --site test_site install-app karam_finance
           bench --site test_site migrate
+          bench new-site --db-root-password root --admin-password admin karam-finance-test.local
+          bench --site karam-finance-test.local set-config allow_tests true
+          bench --site karam-finance-test.local install-app payments
+          bench --site karam-finance-test.local install-app erpnext
+          bench --site karam-finance-test.local install-app karam_finance
+          bench --site karam-finance-test.local migrate
+          bench --site karam-finance-test.local set-config karam_finance_disposable_test_site true
+          bench --site karam-finance-test.local scheduler disable
           bench build --app karam_finance
 
       - name: Verify installed dependencies
@@ -140,6 +148,7 @@ jobs:
           ../apps/karam_finance/karam_finance/karam_general/tests/test_asset_depreciation_contracts.py
           ../apps/karam_finance/karam_finance/karam_general/tests/test_item_price_helper_contracts.py
           ../apps/karam_finance/karam_finance/karam_general/tests/test_tbk_contracts.py
+          ../apps/karam_finance/karam_finance/karam_general/tests/test_tbk_row_contracts.py
           ../apps/karam_finance/karam_finance/karam_general/tests/test_tbfp_contracts.py
           ../apps/karam_finance/karam_finance/reporting_currency/tests/test_reporting_gl_query_contracts.py
           ../apps/karam_finance/karam_finance/reporting_currency/tests/test_party_reporting_query.py
@@ -151,6 +160,7 @@ jobs:
           ../apps/karam_finance/karam_finance/reporting_currency/doctype/reporting_currency_gle/sync/test_doe_metadata_repair.py
           ../apps/karam_finance/karam_finance/reporting_currency/doctype/reporting_currency_gle/sync/test_sync_contracts.py
           ../apps/karam_finance/karam_finance/reporting_currency/doctype/reporting_currency_gle/sync/test_sync_support_contracts.py
+          ../apps/karam_finance/karam_finance/reporting_currency/doctype/reporting_currency_gle/sync/test_sync_status_contracts.py
           ../apps/karam_finance/karam_finance/reporting_currency/doctype/reporting_currency_gle/sync/test_doe_support_contracts.py
           ../apps/karam_finance/karam_finance/common/tests/test_common_contracts.py
           ../apps/karam_finance/karam_finance/common/tests/test_tiny_controller_contracts.py
@@ -159,6 +169,7 @@ jobs:
           ../apps/karam_finance/karam_finance/patches/test_delete_stale_trial_balance_reporting_report.py
           ../apps/karam_finance/karam_finance/patches/test_disable_general_ledger_karam_auto_total.py
           ../apps/karam_finance/karam_finance/tests/test_migrate_contracts.py
+          ../apps/karam_finance/karam_finance/tests/test_site_safety.py
           ../apps/karam_finance/karam_finance/karam_series/tests/test_hooks.py
           ../apps/karam_finance/karam_finance/karam_series/tests/test_doctype_list_sync.py
           ../apps/karam_finance/karam_finance/karam_series/tests/test_settings_and_custom_fields.py
@@ -169,6 +180,19 @@ jobs:
           ../apps/karam_finance/karam_finance/letter_reconciliation/tests/test_doc_event_contracts.py
           ../apps/karam_finance/karam_finance/letter_reconciliation/tests/test_lettering_contracts.py
           ../apps/karam_finance/karam_finance/letter_reconciliation/tests/test_rebuild_support_contracts.py
+
+      - name: Run isolated finance review integration tests
+        if: ${{ !cancelled() && steps.dependencies.outcome == 'success' }}
+        working-directory: /home/runner/frappe-bench/sites
+        env:
+          COVERAGE_RCFILE: /home/runner/frappe-bench/apps/karam_finance/pyproject.toml
+        run: |
+          ../env/bin/python -m coverage run --append -m frappe.utils.bench_helper frappe \
+            --site karam-finance-test.local run-tests \
+            --module karam_finance.tests.finance_review_locking
+          ../env/bin/python -m coverage run --append -m frappe.utils.bench_helper frappe \
+            --site karam-finance-test.local run-tests \
+            --module karam_finance.tests.finance_review_currency_change
 
       - name: Enforce separate line and branch coverage thresholds
         if: ${{ !cancelled() && steps.dependencies.outcome == 'success' }}

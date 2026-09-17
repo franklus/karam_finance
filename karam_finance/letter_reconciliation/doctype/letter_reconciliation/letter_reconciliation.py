@@ -15,6 +15,8 @@ from frappe.exceptions import ValidationError
 from frappe.model.document import Document
 from frappe.utils import cint, flt
 
+from .selection import load_selection, validate_client_snapshot
+
 # Maximum length for letter sequences (A -> ZZ -> ... -> ZZZZZZ)
 MAX_LETTER_LENGTH = 6
 
@@ -87,6 +89,7 @@ def _prepare_letter_items(
     *,
     require_letter: bool | None = None,
     account: str | None = None,
+    permission: str = "write",
 ) -> tuple[
     list[dict[str, Any]], list[dict[str, Any]], list[dict[str, Any]], str | None
 ]:
@@ -101,9 +104,18 @@ def _prepare_letter_items(
     if not (cr_items and dt_items):
         frappe.throw(_("Please select at least one credit entry and one debit entry."))
 
-    account_for_precision = account or _extract_account_from_items(cr_items, dt_items)
+    snapshot = cr_items + dt_items
+    cr_items, dt_items = load_selection(
+        cr_items, dt_items, account=account, permission=permission
+    )
+    account_for_precision = _extract_account_from_items(cr_items, dt_items)
+    precision = _resolve_amount_precision(account_for_precision)
+    validate_client_snapshot(snapshot, cr_items + dt_items, precision=precision)
 
-    validate_sum_of_credit_and_debit(cr_items, dt_items, account=account_for_precision)
+    _validate_lettering_enabled_for_accounts(_selected_accounts(cr_items + dt_items))
+    _validate_totals(
+        cr_items, dt_items, account=account_for_precision, precision=precision
+    )
 
     all_items = cr_items + dt_items
     letters = {_letter_text(i.get("letter")) for i in all_items}
@@ -118,8 +130,7 @@ def _prepare_letter_items(
         return cr_items, dt_items, all_items, None
 
     if require_letter is True:
-        letters.discard("")
-        if len(letters) != 1:
+        if len(letters) != 1 or "" in letters:
             message = _(
                 "Letters can only be removed when all selected entries "
                 "have the same letter."
@@ -151,6 +162,11 @@ def get_adjacent_account(
 
     Permission: Controlled by Letter Reconciliation doctype role permissions.
     """
+    frappe.has_permission("Letter Reconciliation", "read", throw=True)
+    if current_account:
+        frappe.has_permission("Account", doc=current_account, throw=True)
+    if company:
+        frappe.has_permission("Company", doc=company, throw=True)
     if direction == "previous" and not current_account:
         return None
 
@@ -164,7 +180,7 @@ def get_adjacent_account(
     if number_filter:
         filters["account_number"] = number_filter
 
-    result = frappe.get_all(
+    result = frappe.get_list(
         "Account",
         filters=filters,
         fields=["name"],
@@ -205,6 +221,8 @@ def journal_entry_list(  # noqa: PLR0913, PLR0917
 
     Permission: Controlled by Letter Reconciliation doctype role permissions.
     """
+    frappe.has_permission("Letter Reconciliation", "read", throw=True)
+    frappe.has_permission("Account", doc=account, throw=True)
     try:
         query = _journal_entry_query(account)
         query = _filter_journal_entries(
@@ -226,6 +244,8 @@ def journal_entry_list(  # noqa: PLR0913, PLR0917
             ],
             "dr": [e for e in entries if (e.get("debit_in_account_currency") or 0) > 0],
         }
+    except frappe.PermissionError:
+        raise
     except Exception:  # noqa: BLE001 - API returns its established error response.
         frappe.log_error(frappe.get_traceback(), _("Journal Entry List Error"))
         return {"error": _("Unable to fetch journal entries. See error log.")}
@@ -236,16 +256,20 @@ def _journal_entry_query(account: str) -> Any:
     account_info = frappe.db.get_value(
         "Account",
         account,
-        ["name", "enable_lettering"],
+        ["name", "enable_lettering", "company"],
         as_dict=True,
     )
     if not account_info:
         frappe.throw(_("Selected account does not exist."))
     if not account_info.get("enable_lettering"):
         frappe.throw(_("Selected account is not enabled for lettering."))
+    frappe.has_permission("Company", doc=account_info.get("company"), throw=True)
 
     accounts = frappe.qb.DocType("Journal Entry Account")
     journal_entry = frappe.qb.DocType("Journal Entry")
+    permitted = frappe.qb.get_query(
+        "Journal Entry", fields=["name"], ignore_permissions=False
+    )
 
     return (
         frappe.qb.from_(accounts)
@@ -268,6 +292,7 @@ def _journal_entry_query(account: str) -> Any:
             (journal_entry.docstatus == 1)
             & (journal_entry.voucher_type == "Journal Entry")
             & (accounts.account == account)
+            & journal_entry.name.isin(permitted)
         )
         .orderby(journal_entry.posting_date)
     )
@@ -362,11 +387,22 @@ def validate_sum_of_credit_and_debit(
 
     Permission: Controlled by Letter Reconciliation doctype role permissions.
     """
-    try:
-        cr_items = json.loads(cr_items) if isinstance(cr_items, str) else cr_items
-        dt_items = json.loads(dt_items) if isinstance(dt_items, str) else dt_items
+    frappe.has_permission("Letter Reconciliation", "read", throw=True)
+    _prepare_letter_items(cr_items, dt_items, account=account, permission="read")
 
-        precision = _resolve_amount_precision(account)
+
+def _validate_totals(
+    cr_items: list[dict[str, Any]],
+    dt_items: list[dict[str, Any]],
+    *,
+    account: str | None,
+    precision: int | None = None,
+) -> None:
+    """Compare authoritative account-currency amounts using currency precision."""
+    try:
+        precision = (
+            precision if precision is not None else _resolve_amount_precision(account)
+        )
 
         quant = Decimal(1).scaleb(-precision)
         cr_sum = sum(
@@ -411,6 +447,7 @@ def set_letter(
     - None of the selected rows may already have a letter.
     - The letter is chosen for the year of the latest posting_date among selections.
     """
+    frappe.has_permission("Letter Reconciliation", "write", throw=True)
     savepoint = "letter_reconciliation_assign"
     try:
         frappe.db.savepoint(savepoint)
@@ -420,20 +457,24 @@ def set_letter(
         )
         del _common  # unused
 
-        _validate_lettering_enabled_for_accounts(_selected_accounts(all_items, account))
-
         # Compute latest year from posting_date across all selected items
         latest_year_val = _compute_latest_year(all_items)
 
         # Retrieve current letter for the computed year
         current_letter = _get_letter_for_year_locked(latest_year_val)
 
-        _write_selected_letters(all_items, current_letter)
-
         # Advance letter for that year
         next_letter = increment_string(current_letter)
+        if next_letter == current_letter:
+            frappe.throw(_("The letter sequence for this year is exhausted."))
+        _write_selected_letters(all_items, current_letter)
         update_year_letter(latest_year_val, next_letter)
-    except ValidationError:
+    except frappe.QueryDeadlockError:
+        frappe.db.rollback()
+        raise frappe.ValidationError(
+            _("Another reconciliation changed these records. Reload and try again.")
+        ) from None
+    except ValidationError, frappe.PermissionError:
         frappe.db.rollback(save_point=savepoint)
         # Bubble up expected validation errors without wrapping
         raise
@@ -461,6 +502,7 @@ def remove_letter(
     - Totals of selected debits and credits must be equal.
     - All selected rows must have the same non-empty letter.
     """
+    frappe.has_permission("Letter Reconciliation", "write", throw=True)
     savepoint = "letter_reconciliation_remove"
     try:
         frappe.db.savepoint(savepoint)
@@ -470,9 +512,13 @@ def remove_letter(
         )
         del _common  # unused
 
-        _validate_lettering_enabled_for_accounts(_selected_accounts(all_items))
         _write_selected_letters(all_items, "")
-    except ValidationError:
+    except frappe.QueryDeadlockError:
+        frappe.db.rollback()
+        raise frappe.ValidationError(
+            _("Another reconciliation changed these records. Reload and try again.")
+        ) from None
+    except ValidationError, frappe.PermissionError:
         frappe.db.rollback(save_point=savepoint)
         # Bubble up expected validation errors without wrapping
         raise
@@ -574,30 +620,33 @@ def _get_letter_for_year_locked(year: int) -> str:
     year_int = year or frappe.utils.now_datetime().year
     docname = str(year_int)
 
-    row = frappe.db.sql(
-        "select letter from `tabLetter Settings` where name=%s for update",
-        (docname,),
-        as_dict=True,
-    )
-    if row:
-        return (row[0].get("letter") or "A").upper()
-
-    frappe.get_doc(
+    # Insert first: a SELECT FOR UPDATE on a missing year creates competing gap
+    # locks. The native upsert serialises first allocation as well as later ones.
+    values = {
+        "name": docname,
+        "year": year_int,
+        "now": frappe.utils.now(),
+        "user": frappe.session.user,
+    }
+    frappe.db.multisql(
         {
-            "doctype": "Letter Settings",
-            "year": year_int,
-            "letter": "A",
-        }
-    ).insert(ignore_permissions=True)
-
+            "mariadb": """INSERT INTO `tabLetter Settings`
+            (name, year, letter, creation, modified, owner, modified_by, docstatus)
+            VALUES (%(name)s, %(year)s, 'A', %(now)s, %(now)s, %(user)s, %(user)s, 0)
+            ON DUPLICATE KEY UPDATE name=name""",
+            "postgres": """INSERT INTO "tabLetter Settings"
+            (name, year, letter, creation, modified, owner, modified_by, docstatus)
+            VALUES (%(name)s, %(year)s, 'A', %(now)s, %(now)s, %(user)s, %(user)s, 0)
+            ON CONFLICT (name) DO NOTHING""",
+        },
+        values,
+    )
     row = frappe.db.sql(
         "select letter from `tabLetter Settings` where name=%s for update",
         (docname,),
         as_dict=True,
     )
-    if row:
-        return (row[0].get("letter") or "A").upper()
-    return "A"
+    return (row[0].get("letter") or "A").upper()
 
 
 def increment_string(s: str = "") -> str:

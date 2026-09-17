@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from importlib import import_module
 from typing import TYPE_CHECKING, Any, cast
 
 import frappe
@@ -13,6 +14,10 @@ from frappe.query_builder.functions import Coalesce, Round, Sum
 from frappe.utils import flt
 from pypika.analytics import RowNumber
 from pypika.terms import Field, NullValue
+
+from karam_finance.common.ledger_permissions import apply_gl_permissions
+
+brs_permissions = import_module(f"{__package__}.brs_permissions")
 
 if TYPE_CHECKING:
     from collections.abc import Iterable
@@ -208,6 +213,7 @@ def _purchase_invoice_query(
 ) -> Any:
     pi = frappe.qb.DocType("Purchase Invoice")
     account = frappe.qb.DocType("Account")
+    company = frappe.qb.DocType("Company")
 
     conditions = (
         (pi.docstatus == 1)
@@ -224,9 +230,21 @@ def _purchase_invoice_query(
             pi.posting_date > filters.report_date
         ) & _clearance_is_on_or_before(pi.clearance_date, filters.report_date)
 
-    debit = Case().when(pi.paid_amount < 0, -pi.paid_amount).else_(0)
-    credit = Case().when(pi.paid_amount > 0, pi.paid_amount).else_(0)
-    query = frappe.qb.from_(pi).join(account).on(pi.cash_bank_account == account.name)
+    # Match ERPNext's bank-account posting currency, including signed returns.
+    paid = (
+        Case()
+        .when(account.account_currency == company.default_currency, pi.base_paid_amount)
+        .else_(pi.paid_amount)
+    )
+    debit = Case().when(paid < 0, -paid).else_(0)
+    credit = Case().when(paid > 0, paid).else_(0)
+    query = (
+        frappe.qb.from_(pi)
+        .join(account)
+        .on(pi.cash_bank_account == account.name)
+        .join(company)
+        .on(pi.company == company.name)
+    )
     if outstanding:
         return query.select(
             *_entry_projection(
@@ -246,13 +264,14 @@ def _purchase_invoice_query(
             )
         ).where(conditions)
 
-    return query.select((-pi.paid_amount).as_("movement")).where(conditions)
+    return query.select((0 - paid).as_("movement")).where(conditions)
 
 
 def _pos_query(filters: frappe._dict[str, Any], *, outstanding: bool) -> Any:
     si = frappe.qb.DocType("Sales Invoice")
     sip = frappe.qb.DocType("Sales Invoice Payment")
     account = frappe.qb.DocType("Account")
+    company = frappe.qb.DocType("Company")
 
     conditions = (
         (sip.account == filters.account)
@@ -276,10 +295,17 @@ def _pos_query(filters: frappe._dict[str, Any], *, outstanding: bool) -> Any:
         .on(sip.parent == si.name)
         .join(account)
         .on(sip.account == account.name)
+        .join(company)
+        .on(si.company == company.name)
+    )
+    received = (
+        Case()
+        .when(account.account_currency == company.default_currency, sip.base_amount)
+        .else_(sip.amount)
     )
     if outstanding:
-        debit = Case().when(sip.amount > 0, sip.amount).else_(0)
-        credit = Case().when(sip.amount < 0, -sip.amount).else_(0)
+        debit = Case().when(received > 0, received).else_(0)
+        credit = Case().when(received < 0, -received).else_(0)
         return query.select(
             *_entry_projection(
                 ConstantColumn("Sales Invoice"),
@@ -298,7 +324,7 @@ def _pos_query(filters: frappe._dict[str, Any], *, outstanding: bool) -> Any:
             )
         ).where(conditions)
 
-    return query.select(sip.amount.as_("movement")).where(conditions)
+    return query.select(received.as_("movement")).where(conditions)
 
 
 def _union_all(queries: Iterable[Any]) -> Any:
@@ -315,12 +341,22 @@ def get_entries_for_bank_reconciliation_statement(
     """Fetch built-in outstanding sources with source-local query plans."""
     filters = _coerce_filters(filters)
     queries = [
-        _journal_entry_query(filters, outstanding=True),
-        _payment_entry_query(filters, outstanding=True),
-        _purchase_invoice_query(filters, outstanding=True),
+        brs_permissions.restrict_source(
+            _journal_entry_query(filters, outstanding=True), "Journal Entry"
+        ),
+        brs_permissions.restrict_source(
+            _payment_entry_query(filters, outstanding=True), "Payment Entry"
+        ),
+        brs_permissions.restrict_source(
+            _purchase_invoice_query(filters, outstanding=True), "Purchase Invoice"
+        ),
     ]
     if filters.get("include_pos_transactions"):
-        queries.append(_pos_query(filters, outstanding=True))
+        queries.append(
+            brs_permissions.restrict_source(
+                _pos_query(filters, outstanding=True), "Sales Invoice"
+            )
+        )
     entries: list[dict[str, Any]] = []
     for query in queries:
         entries.extend(query.run(as_dict=True))
@@ -330,35 +366,53 @@ def get_entries_for_bank_reconciliation_statement(
 def get_journal_entries(filters: dict[str, Any]) -> list[dict[str, Any]]:
     """Compatibility accessor for Journal Entry outstanding rows."""
     filters = _coerce_filters(filters)
-    return _journal_entry_query(filters, outstanding=True).run(as_dict=True)
+    return brs_permissions.restrict_source(
+        _journal_entry_query(filters, outstanding=True), "Journal Entry"
+    ).run(as_dict=True)
 
 
 def get_payment_entries(filters: dict[str, Any]) -> list[dict[str, Any]]:
     """Compatibility accessor for Payment Entry outstanding rows."""
     filters = _coerce_filters(filters)
-    return _payment_entry_query(filters, outstanding=True).run(as_dict=True)
+    return brs_permissions.restrict_source(
+        _payment_entry_query(filters, outstanding=True), "Payment Entry"
+    ).run(as_dict=True)
 
 
 def get_purchase_invoices(filters: dict[str, Any]) -> list[dict[str, Any]]:
     """Compatibility accessor for paid Purchase Invoice outstanding rows."""
     filters = _coerce_filters(filters)
-    return _purchase_invoice_query(filters, outstanding=True).run(as_dict=True)
+    return brs_permissions.restrict_source(
+        _purchase_invoice_query(filters, outstanding=True), "Purchase Invoice"
+    ).run(as_dict=True)
 
 
 def get_pos_entries(filters: dict[str, Any]) -> list[dict[str, Any]]:
     """Compatibility accessor for POS parent Sales Invoice rows."""
     filters = _coerce_filters(filters)
-    return _pos_query(filters, outstanding=True).run(as_dict=True)
+    return brs_permissions.restrict_source(
+        _pos_query(filters, outstanding=True), "Sales Invoice"
+    ).run(as_dict=True)
 
 
 def _get_builtin_incorrect_clearance_query(filters: frappe._dict[str, Any]) -> Any:
     queries = [
-        _journal_entry_query(filters, outstanding=False),
-        _payment_entry_query(filters, outstanding=False),
-        _purchase_invoice_query(filters, outstanding=False),
+        brs_permissions.restrict_source(
+            _journal_entry_query(filters, outstanding=False), "Journal Entry"
+        ),
+        brs_permissions.restrict_source(
+            _payment_entry_query(filters, outstanding=False), "Payment Entry"
+        ),
+        brs_permissions.restrict_source(
+            _purchase_invoice_query(filters, outstanding=False), "Purchase Invoice"
+        ),
     ]
     if filters.get("include_pos_transactions"):
-        queries.append(_pos_query(filters, outstanding=False))
+        queries.append(
+            brs_permissions.restrict_source(
+                _pos_query(filters, outstanding=False), "Sales Invoice"
+            )
+        )
     return _union_all(queries)
 
 
@@ -398,7 +452,7 @@ def get_balance_on(
         Sum(cast(Field, Round(gl_entry.debit_in_account_currency, precision)))
         - Sum(cast(Field, Round(gl_entry.credit_in_account_currency, precision)))
     ).as_("balance")
-    result = (
+    query = (
         frappe.qb.from_(gl_entry)
         .select(balance)
         .where(
@@ -407,18 +461,26 @@ def get_balance_on(
             & (gl_entry.account == account)
             & (gl_entry.company == company)
         )
-        .run(as_dict=True)
     )
+    result = apply_gl_permissions(query, gl_entry).run(as_dict=True)
     return flt(result[0].get("balance")) if result else 0.0
 
 
 def extension_hook_names(hook_name: str, built_in_name: str) -> list[str]:
     """Return additive report hooks without replaying ERPNext's base hook."""
-    return [
+    methods = [
         method_name
         for method_name in frappe.get_hooks(hook_name)
         if method_name != built_in_name
     ]
+    if methods and frappe.session.user != "Administrator":
+        frappe.throw(
+            frappe._(
+                "Bank Reconciliation extensions require Administrator access because their source permissions cannot be verified."
+            ),
+            frappe.PermissionError,
+        )
+    return methods
 
 
 __all__ = [

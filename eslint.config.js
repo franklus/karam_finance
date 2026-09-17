@@ -31,6 +31,7 @@ const frappeGlobals = {
 module.exports = defineConfig([
   globalIgnores([
     ".git/**",
+    ".venv/**",
     "**/boilerplate/**",
     "cypress/**",
     "node_modules/**",
