@@ -45,15 +45,54 @@ class TestReportingRateMetadata(IntegrationTestCase):
         frappe.get_doc({"doctype": doctype, "name": name, **values}).db_insert()
 
     def _converted(self, direction: str, rate: float) -> dict[str, Any]:
-        gle = {
-            "name": self.token + direction,
-            "company": self.token,
-            "account": self.token + "Payable",
-            "account_currency": "EUR",
-            "posting_date": "2025-12-31",
-            "debit": 121456125000,
-            "credit": 0,
-        }
+        source_name = self.token + direction
+        self._insert(
+            "GL Entry",
+            source_name,
+            company=self.token,
+            account=self.token + "Payable",
+            account_currency="EUR",
+            transaction_currency="EUR",
+            transaction_exchange_rate=1,
+            posting_date="2025-12-31",
+            debit_in_account_currency=121456125000,
+            debit_in_transaction_currency=121456125000,
+            credit_in_account_currency=0,
+            credit_in_transaction_currency=0,
+            debit=121456125000,
+            credit=0,
+            is_opening="No",
+            is_advance="No",
+            to_rename=0,
+            is_cancelled=0,
+            docstatus=1,
+        )
+        gle = frappe.db.get_value(
+            "GL Entry",
+            source_name,
+            [
+                "name",
+                "company",
+                "account",
+                "account_currency",
+                "transaction_currency",
+                "transaction_exchange_rate",
+                "posting_date",
+                "debit_in_account_currency",
+                "debit_in_transaction_currency",
+                "credit_in_account_currency",
+                "credit_in_transaction_currency",
+                "debit",
+                "credit",
+                "is_opening",
+                "is_advance",
+                "to_rename",
+                "is_cancelled",
+                "docstatus",
+            ],
+            as_dict=True,
+        )
+        assert gle is not None
         timeline = [{"date": date(2025, 1, 1), "rate": rate, "direction": direction}]
         return conversion.process_gl_entry(
             gle, timeline, [date(2025, 1, 1)], "LBP", "USD"

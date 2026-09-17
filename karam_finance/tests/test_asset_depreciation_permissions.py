@@ -185,8 +185,26 @@ class TestAssetDepreciationPermissions(IntegrationTestCase):
             },
             ignore_prepared_report=True,
         )
-        names = {row.get("asset") for row in result["result"] if row.get("asset")}
-        assert names == {self.asset}
+        rows = [
+            row
+            for row in result["result"]
+            if isinstance(row, dict) and row.get("asset")
+        ]
+        assert {row["asset"] for row in rows} == {self.asset}
+        assert denied_asset not in {row["asset"] for row in rows}
+
+        columns = [column["fieldname"] for column in result["columns"]]
+        total_row = next(
+            row
+            for row in result["result"]
+            if isinstance(row, list) and row and row[0] == "Total"
+        )
+        totals = dict(zip(columns, total_row, strict=False))
+        assert totals["purchase_amount"] == 5000
+        assert totals["opening_accumulated_depreciation"] == 20
+        assert totals["depreciation_amount"] == 100
+        assert totals["accumulated_depreciation"] == 120
+        assert totals["value_after_depreciation"] == 4880
 
     def test_unrestricted_reader_retains_complete_asset_totals(self) -> None:
         frappe.set_user("Administrator")

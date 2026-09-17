@@ -96,6 +96,39 @@ class TestIdentityCurrencySync(IntegrationTestCase):
         rows = [frappe.get_doc("Reporting Currency GLE", name) for name in names]
         return {row.get("gl_entry"): row for row in rows}
 
+    def _assert_persisted_rows(self, source_names: set[str], manual_name: str) -> None:
+        assert frappe.db.count("Reporting Currency GLE", {"company": self.token}) == 4
+        persisted = frappe.db.get_all(
+            "Reporting Currency GLE",
+            filters={"company": self.token},
+            fields=["name", "gl_entry", "manual_entry"],
+            limit=0,
+        )
+        assert {
+            row.gl_entry for row in persisted if not row.manual_entry
+        } == source_names
+        assert [row.name for row in persisted if row.manual_entry] == [manual_name]
+
+    def _generated_snapshot(self, source_names: set[str]) -> dict[str, dict[str, Any]]:
+        return {
+            name: {
+                field: row.get(field)
+                for field in (
+                    "reporting_debit",
+                    "reporting_credit",
+                    "debit",
+                    "credit",
+                    "exchange_rate",
+                    "source_exchange_rate",
+                    "exchange_rate_application",
+                    "reporting_currency",
+                    "manual_entry",
+                )
+            }
+            for name, row in self._reporting_rows().items()
+            if name in source_names
+        }
+
     def test_foreign_accounts_copy_company_amounts_without_exchange_records(
         self,
     ) -> None:
@@ -118,10 +151,43 @@ class TestIdentityCurrencySync(IntegrationTestCase):
             assert not row.get("currency_exchange") and not row.get("date")
             assert not row.get("exchange_rate_application")
 
-    def test_incremental_and_repeated_full_sync_preserve_company_precision(
+    def test_repeated_full_sync_preserves_precision_and_manual_rows(
         self,
     ) -> None:
         sync_reporting_currency_entries(self.token, "Administrator")
+        manual_name = self.token + "manual"
+        self._insert(
+            "Reporting Currency GLE",
+            manual_name,
+            company=self.token,
+            account=self.token + "EUR",
+            account_currency="EUR",
+            posting_date="2025-06-30",
+            reporting_currency="EUR",
+            debit=10,
+            reporting_debit=10,
+            transaction_exchange_rate=1,
+            manual_entry=1,
+        )
+        assert (
+            frappe.db.get_value("Reporting Currency GLE", manual_name, "manual_entry")
+            == 1
+        )
+        manual_fields = [
+            "company",
+            "account",
+            "account_currency",
+            "posting_date",
+            "reporting_currency",
+            "debit",
+            "reporting_debit",
+            "transaction_exchange_rate",
+            "manual_entry",
+            "gl_entry",
+        ]
+        manual_before = frappe.db.get_value(
+            "Reporting Currency GLE", manual_name, manual_fields, as_dict=True
+        )
         frappe.db.set_value("GL Entry", self.token + "debit", "debit", 100.1234)
         frappe.db.set_value(
             "GL Entry",
@@ -129,22 +195,42 @@ class TestIdentityCurrencySync(IntegrationTestCase):
             {"credit": 60.1234, "credit_in_account_currency": 60.1234},
         )
         result = sync_reporting_currency_entries(self.token, "Administrator")
-        assert result["sync_mode"].startswith("Incremental")
+        assert result["sync_mode"] == "Full Sync"
         row = self._reporting_rows()[self.token + "debit"]
         assert row.get("reporting_debit") == row.get("debit") == 100.1234
         assert row.get("debit_amount_in_account_currency") == 120
+        source_names = {
+            self.token + suffix for suffix in ("debit", "credit", "domestic")
+        }
+
+        first_generated = self._generated_snapshot(source_names)
+        rows = self._reporting_rows()
+        assert set(rows) == source_names | {None}
+        assert len(rows) == 4
+        self._assert_persisted_rows(source_names, manual_name)
         frappe.db.set_single_value(
             "Reporting Currency Settings", "last_sync_timestamp", None
         )
         for _ in range(2):
             result = sync_reporting_currency_entries(self.token, "Administrator")
-            assert result["sync_mode"].startswith("Full Sync")
+            assert result["sync_mode"] == "Full Sync"
             rows = self._reporting_rows()
-            assert len(rows) == 3
-            assert rows[self.token + "debit"].get("reporting_debit") == 100.1234
-            assert rows[self.token + "domestic"].get("reporting_credit") == 60.1234
-            assert rows[self.token + "credit"].get("reporting_credit") == 40
-            assert rows[self.token + "debit"].get("exchange_rate") == 1
+            assert set(rows) == source_names | {None}
+            assert len(rows) == 4
+            self._assert_persisted_rows(source_names, manual_name)
+            generated = self._generated_snapshot(source_names)
+            assert generated == first_generated
+            manual = frappe.db.get_value(
+                "Reporting Currency GLE",
+                manual_name,
+                manual_fields,
+                as_dict=True,
+            )
+            assert manual and dict(manual) == dict(manual_before)
+            assert generated[self.token + "debit"]["reporting_debit"] == 100.1234
+            assert generated[self.token + "domestic"]["reporting_credit"] == 60.1234
+            assert generated[self.token + "credit"]["reporting_credit"] == 40
+            assert generated[self.token + "debit"]["exchange_rate"] == 1
 
     def test_genuine_company_conversion_still_requires_an_exchange_record(self) -> None:
         frappe.db.set_single_value(
